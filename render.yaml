@@ -1,0 +1,58 @@
+# Render Blueprint -- deploys both services from this one repo in one
+# shot. See https://render.com/docs/blueprint-spec.
+#
+# First-time setup:
+#   1. Push this repo to GitHub.
+#   2. Package + upload the data bundle to a GitHub Release (programs.db
+#      and chroma_measures/ aren't committed to git -- see .gitignore's
+#      own comment for why, and the deploy notes for the exact commands
+#      to build and upload the bundle).
+#   3. In the Render dashboard: New -> Blueprint -> point at this repo.
+#   4. Render will prompt for every `sync: false` env var below during
+#      that first setup (DATA_RELEASE_URL_BASE on the API service).
+#   5. The two `sync: false` vars that reference the OTHER service's own
+#      URL (DJANGO_CORS_ALLOWED_ORIGINS, VITE_API_BASE) can't be known
+#      until after that first deploy assigns each service its URL --
+#      fill them in via each service's own Environment tab once both
+#      are up, then trigger a manual redeploy of each.
+services:
+  - type: web
+    name: budget-api
+    runtime: python
+    plan: free
+    buildCommand: >-
+      pip install -r backend/requirements.txt &&
+      curl -fL -o programs.db "$DATA_RELEASE_URL_BASE/programs.db" &&
+      curl -fL "$DATA_RELEASE_URL_BASE/chroma_measures.tar.gz" | tar xz &&
+      python -c "from chromadb.utils import embedding_functions; embedding_functions.DefaultEmbeddingFunction()" &&
+      cd backend && python manage.py collectstatic --noinput
+    startCommand: gunicorn --chdir backend config.wsgi:application --bind 0.0.0.0:$PORT
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "False"
+      - key: DATA_RELEASE_URL_BASE
+        sync: false
+        # e.g. https://github.com/<you>/<repo>/releases/download/data-latest
+        # (no trailing slash -- programs.db/chroma_measures.tar.gz are
+        # appended directly, see buildCommand above)
+      - key: DJANGO_CORS_ALLOWED_ORIGINS
+        sync: false
+        # set after budget-frontend's first deploy, e.g.
+        # https://budget-frontend.onrender.com
+
+  - type: web
+    name: budget-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE
+        sync: false
+        # set after budget-api's first deploy, e.g.
+        # https://budget-api.onrender.com/api -- Vite bakes this in at
+        # BUILD time (static-site output, no server to read env vars at
+        # request time), so changing it always needs a manual redeploy,
+        # not just a dashboard save.

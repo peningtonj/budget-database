@@ -1,0 +1,6 @@
+Django==6.0.7
+django-cors-headers==4.9.0
+djangorestframework==3.17.1
+chromadb==1.5.9
+gunicorn==23.0.0
+whitenoise==6.11.0

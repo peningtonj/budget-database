@@ -1,0 +1,40 @@
+# Regeneratable environments -- installed from requirements.txt/package.json
+backend/.venv/
+frontend/node_modules/
+
+# Build outputs -- Render regenerates these itself on every deploy
+frontend/dist/
+backend/staticfiles/
+
+# Raw source PDFs/Excel (833M) -- only needed to regenerate the two build
+# artifacts below, never read at runtime. Kept local-only; see the data
+# section of KNOWN_GAPS.md (and the deploy notes) for how to regenerate
+# programs.db/chroma_measures/ from this if it's ever missing.
+data/
+
+# Build artifacts (programs.db 39M, chroma_measures/ 87M) -- deliberately
+# NOT committed. Deployed by fetching a packaged copy from a GitHub
+# Release at build time (see render.yaml) rather than versioning a large
+# binary DB in git history. Regenerate locally via:
+#   python3 build_db.py && python3 build_measures_db.py &&
+#   python3 build_bp2_db.py && python3 build_agency_aliases.py &&
+#   backend/.venv/bin/python build_measure_embeddings.py
+programs.db
+chroma_measures/
+chroma_measures.tar.gz
+
+# Python bytecode/caches
+__pycache__/
+*.pyc
+
+# Editor/OS/tooling cruft
+.DS_Store
+.vscode/
+.idea/
+.claude/
+
+# In case a local .env ever gets added later (nothing in this repo
+# loads one today -- settings.py reads real env vars directly, and
+# local dev works with none set at all, see its own comments).
+.env
+.env.*
