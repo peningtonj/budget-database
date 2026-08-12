@@ -142,8 +142,8 @@ structural gaps found across the older/wider file variety (section 9
 below) were fixed. 1,895 files scanned, 1,193 produced data (701 legitimately
 have zero measures that round — a normal agency/edition combination, not
 a gap), 1 error (the same corrupt `NQWIA PBS Tables.xlsx` from section 2).
-31,800 `measure_impacts` rows / 11,597 `measure_programs` rows / 3,141
-distinct measure names / 3,491 distinct measure ids (ids are keyed by
+31,503 `measure_impacts` rows / 11,682 `measure_programs` rows / 3,327
+distinct measure names / 3,673 distinct measure ids (ids are keyed by
 `(measure_name, edition)`, so a real measure recurring across editions
 gets one id per edition it appears in; 0 id collisions needed a salt
 bump). Cross-checked against `measure_text` (BP2, section 7): of the 22
@@ -874,3 +874,127 @@ would have silently lived on in topic search forever, even after being
 correctly removed from `measure_text` itself. Now diffs the current
 `measure_text` id set against the collection's own ids and deletes
 anything no longer present before upserting the rest.
+
+## 12. Dash-prefixed and merged-together measure names (`parse_measures.py`)
+
+Triggered by a user noticing measures whose name started with a bare
+`-`. Investigating traced back to three distinct bugs -- one narrow
+(the literal symptom reported), two much broader, found only by
+tracing *why* the narrow one happened at all.
+
+**Bug 1 -- `CATEGORY_RE` never learned "revenue".** Widened elsewhere
+in this file (`SECTION_RE`/`GRAND_TOTAL_RE`/`TOTAL_RE`/
+`_is_receipt_like()`, all section 9) to treat "Administered revenue"/
+"Departmental revenue" as a receipt-direction synonym alongside
+receipt/payment/expense, but `CATEGORY_RE` itself was never given the
+same treatment. Confirmed via a full-dataset scan: 301 such cells
+across 82 files. Unrecognised, each line fell through to the free-text
+handler and got misread as a brand-new agency name -- discarding the
+real one, and leaving whatever measure was still open with the wrong
+agency attached to its own category data. Fixed by adding `revenues?`
+to `CATEGORY_RE`'s suffix alternation, matching the other three regexes
+exactly.
+
+**Bug 2 -- bare-dash sibling bullets under an unstated heading.**
+Confirmed via direct cell dumps across three files, three shapes of the
+same underlying convention -- a single announcement introducing several
+named sub-components, each its own row, only the first of which (or
+none at all) repeats the heading text:
+
+- Treasury 2017-18 Budget: the heading is its own bare row with no $
+  data ("Tax Integrity Package"), every sibling bullet (including the
+  first) is bare-dash-only ("– combatting fraud in the precious metals
+  industry").
+- DVA 2017-18 Budget: heading and first bullet share one cell
+  ("Guaranteeing Medicare:\n- Medicare Benefits Schedule -\n
+  indexation(b)"), only later siblings are bare-dash.
+- DIIS 2018-19 Budget: heading is its own bare row, but every bullet
+  already carries its own inline program-number hint on the same row,
+  so the *existing* unconditional hint-check already recognised each as
+  its own measure correctly -- only the missing heading-prefix was a
+  gap here, not a mis-attribution.
+
+A bare-dash title is never a real agency name (confirmed: not one
+single counter-example across the whole dataset), so `LEADING_DASH_RE`
+(`^[-–—‐‑]\s`) is a safe, mechanical signal, the same reasoning
+`TRAILING_DASH_RE` already relies on for a title split across two rows
+(section 8). `HEADING_PREFIX_RE` + `_resolve_measure_title()` track the
+most recently seen non-dash title as `pending_heading` (capturing just
+the "Heading:" portion when a title already embeds its own first
+bullet, so it's never duplicated onto later siblings) and prepend it
+onto whichever bare-dash sibling(s) follow. Result: `"- improving the
+integrity of GST on property transactions"` -> `"Tax Integrity Package
+– improving the integrity of GST on property transactions"`.
+
+**Bug 3 -- some agencies' own filings omit the per-measure "Total" row
+almost entirely.** By far the deepest of the three, and the one that
+made bug 2 impossible to fix correctly in isolation (`pending_heading`
+tracking depends on every real title in the file being recognised
+correctly -- Treasury's own file turned out to have *dozens* of
+titles failing that, not just the dash-prefixed ones). The state
+machine's `expect_agency` state relies on a "Total" row to know a
+measure's own category lines have ended; without one, the *next*
+measure's title reads exactly like a second, legitimate agency name
+under the still-open measure (a real, already-documented pattern in
+this module's own docstring: "Agency name -> category lines -> Agency
+name (another agency, same measure) -> ... -> Total"). Both shapes are
+structurally identical -- free text, no $ data, appearing straight
+after a category line -- so there's no *local* signal to tell them
+apart.
+
+Confirmed via direct row-by-row tracing (Treasury 2017-18 Budget) that
+this agency's own convention is to omit "Total" specifically when it
+would just repeat a single category line's own already-visible figure
+-- a "Total" only ever appears for a multi-line/multi-bullet group.
+Quantified via a `category-rows : total-rows` ratio scan across a wide
+sample: consistently 0.03-0.16 for Treasury's own department file
+("TSY") and the ATO across 2017-18 through 2022-23 (both March and
+October), and for Services Australia's MYEFO filings, versus 0.27-1.5
+for every other file checked -- confirming this is a genuine, several-
+year filing choice by a handful of specific agencies, not noise. The
+same ratio check on 2023-24 Budget Treasury (0.75) confirms the agency
+switched back to normal per-measure Totals from that edition on.
+
+Rather than trying to resolve the general ambiguity (a real risk: a
+wrong guess here could misattribute one measure's real $ figures onto
+another), `_uses_sparse_totals()` detects the affected sheets
+mechanically (>=5 category rows, ratio <0.2) and only *those* sheets
+get a relaxed rule: a free-text, no-data row after >=1 category line is
+read as a **new measure**, not a second agency. Scoped this narrowly
+because every concretely-traced instance in these specific agencies'
+own files confirmed the free-text row was always a genuinely new,
+unrelated measure -- each of these is that one agency's own single-
+agency filing (no real reason to name a second agency inside its own
+document at all) -- so the risk of misreading a genuine second-agency
+line as a new measure is judged low specifically for sheets this
+detector flags, without touching the (much more common) normal-ratio
+files where the original, more conservative rule still applies.
+
+**Validation.** Sums each detected sparse-totals sheet's own category-
+line $ values directly from the raw cells (bypassing the parser's own
+measure/agency grouping entirely) and compares against the parser's own
+total for that sheet -- confirms no $ figure is dropped, duplicated, or
+misattributed *in aggregate*, independent of whether every individual
+measure/agency boundary is drawn perfectly. Across all 39 sparse-totals
+sheets detected dataset-wide, 35 matched exactly on the first pass; the
+remaining 4 "mismatches" were all traced to gaps in the *validation
+script itself*, not the parser -- a measure title carrying its own $
+data inline with no separate category line at all (Administrative
+Appeals Tribunal 2017-18, missed entirely by a validator that only
+summed `CATEGORY_RE`-shaped rows), and two shapes of a grand total's
+own Administered/Departmental *breakdown* row (bare "Administered"/
+"Departmental" with no suffix; and the same but carrying a trailing
+footnote marker, "Departmental (d)") that also happen to syntactically
+match `CATEGORY_RE` -- the real parser already knows to skip these via
+its own `in_grand_breakdown` state tracking (section 6), which the
+validation script needed to separately replicate. Fixed the validator,
+re-ran: all 39 sheets match exactly.
+
+**Net effect** (2017-18 through 2022-23 editions only; nothing else
+moved): Treasury's own 2017-18 Budget file alone went from 6 distinct
+measures to 51, all correctly separated and named, confirmed by direct
+inspection. Across the full 19-edition suspicious-name smoke test
+(section 9's own methodology), zero new suspicious names anywhere and
+zero regressions -- the only survivor is the same already-documented
+`"Supporting Connectivity,"` genuine source defect (section 8).
+Distinct measure names across the whole rebuild: 3,141 -> 3,327.

@@ -83,7 +83,8 @@ EDITIONS = [
     (os.path.join(ROOT, "data/papers/MYEFO/2020-21 MYEFO.pdf"), "2020-21 MYEFO"),
     (os.path.join(ROOT, "data/papers/MYEFO/2021-22 MYEFO.pdf"), "2021-22 MYEFO"),
     (os.path.join(ROOT, "data/papers/MYEFO/2023-24 MYEFO .pdf"), "2023-24 MYEFO"),
-    (os.path.join(ROOT, "data/papers/MYEFO/MYEFO2425.pdf"), "2024-25 MYEFO"),
+    (os.path.join(ROOT, "data/papers/MYEFO/2024-25 MYEFO.pdf"), "2024-25 MYEFO"),
+    (os.path.join(ROOT, "data/papers/MYEFO/2025-26 MYEFO.pdf"), "2025-26 MYEFO"),
 ]
 
 

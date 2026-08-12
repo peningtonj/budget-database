@@ -157,9 +157,22 @@ RELATED_RECEIPTS_RE = re.compile(r"^related\s+receipts$", re.I)
 # misread as a measure name (the very first row in the sheet) or an
 # agency name (the direction-check below already treats "expense" as
 # "payment" the same way BP2's own Revenue/Expense/Capital terminology
-# does, via not containing "receipt").
+# does, via not containing "receipt"). "Revenue" is a fourth wording,
+# alongside receipt/payment/expense, for this same role -- SECTION_RE/
+# GRAND_TOTAL_RE/TOTAL_RE/_is_receipt_like() already all treat it as a
+# receipt-direction synonym, but CATEGORY_RE itself never got the same
+# treatment (confirmed via a full-dataset scan: 301 "Administered
+# revenue"/"Departmental revenue" cells across 82 files). Unrecognised,
+# each such line fell through to the free-text handler and got misread
+# as a brand-new agency name -- silently discarding the real one, and
+# (worse) leaving the *next* row's own category data wrongly still
+# attributed to whatever measure was open before it, corrupting agency
+# attribution across every revenue-measures section that uses this
+# wording (mostly older, pre-~2019 editions).
 CATEGORY_RE = re.compile(
-    r"^(administered|departmental|equity)(\s+capital)?(\s+(payments?|receipts?|expenses?))?(\s*\([a-z]+\))*$", re.I)
+    r"^(administered|departmental|equity)(\s+capital)?(\s+(payments?|receipts?|revenues?|expenses?))?(\s*\([a-z]+\))*$",
+    re.I,
+)
 
 
 def _is_receipt_like(label):
@@ -194,6 +207,51 @@ FOOTNOTE_EXPLANATION_RE = re.compile(r"^\([a-z]{1,3}\)\s+\S")
 # real, complete measure title ends in a dangling dash, so this is a
 # safe, mechanical continuation signal, not a guess.
 TRAILING_DASH_RE = re.compile(r"[-–—‐‑]\s*$")
+# A single free-text heading row ("Tax Integrity Package", Treasury
+# 2017-18 Budget; "Australian Technology and Science Growth Plan", DIIS
+# 2018-19 Budget) sometimes introduces a group of sibling sub-measures,
+# each its own row, each titled with only a bare leading dash ("–
+# combatting fraud in the precious metals industry") and no repeat of
+# the heading text -- the heading is only ever implied by the source
+# document's own indentation/bullet-list styling, not machine-readable
+# from any single row alone. Confirmed via direct cell dumps to be a
+# real, recurring convention (not free-form prose that happens to start
+# with a hyphen): every dash-bulleted title observed is immediately
+# preceded, with only category/total rows in between, by either such a
+# heading or another dash-bulleted sibling of the same group -- never a
+# genuinely unrelated row. Unrecognised, a bare-dash title fell through
+# to the generic free-text handler and got misread as an agency name
+# for whatever measure was still open (a real agency name is never
+# itself dash-prefixed, so this is a safe, mechanical signal, the same
+# kind of reasoning TRAILING_DASH_RE above already relies on).
+#
+# A second, single-cell variant (DVA 2017-18 Budget) combines the
+# heading and its own first bullet into one title ("Guaranteeing
+# Medicare:_x000D_\n- Medicare Benefits Schedule -_x000D_\n
+# indexation(b)", after norm() collapsing to "Guaranteeing Medicare: -
+# Medicare Benefits Schedule - indexation(b)"); only its LATER sibling
+# bullets are bare-dash-only. HEADING_PREFIX_RE below captures just the
+# "Heading:" portion in that case, so it isn't duplicated onto later
+# siblings alongside the first bullet's own text.
+LEADING_DASH_RE = re.compile(r"^[-–—‐‑]\s")
+HEADING_PREFIX_RE = re.compile(r"^(.+?:)\s*[-–—‐‑]")
+
+
+def _resolve_measure_title(label, pending_heading):
+    """Returns (measure_title, updated_pending_heading) for a newly
+    captured measure name -- see LEADING_DASH_RE's own docstring. A
+    bare-dash title gets pending_heading prepended (left alone,
+    unprefixed, if none is set -- the previous, less-good behaviour);
+    pending_heading itself is deliberately NOT updated in that case,
+    since more dash-prefixed siblings of the same group may still
+    follow. A non-dash title always updates pending_heading instead,
+    to whatever a later sibling (if any) should be prefixed with.
+    """
+    if LEADING_DASH_RE.match(label):
+        title = f"{pending_heading} {label}" if pending_heading else label
+        return title, pending_heading
+    m = HEADING_PREFIX_RE.match(label)
+    return label, (m.group(1) if m else label)
 # A literal unfilled Excel template placeholder some agencies never
 # replaced with their actual measure name (seen e.g. ACSQHC 2025-26 --
 # "<Enter measure name here> (a)", a $0 row whose own footnote says the
@@ -393,7 +451,54 @@ def _is_data_like(v):
     return True
 
 
-def parse_measures_sheet(rows, col_order, default_agency=None):
+def _uses_sparse_totals(rows):
+    """True if this sheet's own convention mostly omits the per-measure
+    "Total" row the state machine otherwise relies on to know a measure's
+    category lines have ended -- confirmed via direct inspection to be a
+    genuine, consistent, multi-year filing choice for a handful of
+    agencies (Treasury's own department file 2017-18 through 2022-23,
+    both its main "TSY" sheet and, to a lesser extent, the ATO's;
+    Services Australia's own MYEFO filings), not noise: a "Total" only
+    ever appears for a *multi-line* measure (several category rows, or a
+    multi-bullet package under one heading -- see LEADING_DASH_RE/
+    HEADING_PREFIX_RE), apparently because a Total that would just repeat
+    a single category line's own already-visible figure was treated as
+    redundant and dropped. Detected by counting how many of the sheet's
+    own "Administered .../Departmental ..." category-line rows have a
+    corresponding "Total" row at all (real ratios observed: 0.03-0.16 for
+    the affected agencies, 0.27-1.5 for everything else checked) -- a
+    >=5-category-row floor avoids noise on tiny sheets where one missing
+    Total swings the ratio wildly.
+
+    Read by parse_measures_sheet to relax its own agency-vs-new-measure
+    disambiguation (see its own use of this flag): normally a free-text
+    row with no data, appearing after >=1 category line with no Total in
+    between, is read as a *second agency for the same still-open
+    measure* (a real, documented pattern -- see this module's own
+    docstring). On a sparse-totals sheet that same shape is read as a
+    brand new measure instead, since every concretely-traced instance in
+    these agencies' own files confirmed the free-text row was always a
+    genuinely new, unrelated measure, never a second agency (each of
+    these files is that one agency's own single-agency filing, which
+    structurally has little reason to name a second agency at all).
+    """
+    category = 0
+    total = 0
+    for row in rows:
+        _, label = _first_nonempty(row)
+        if not label:
+            continue
+        lower = label.lower()
+        if lower.startswith("total"):
+            total += 1
+        elif CATEGORY_RE.match(label):
+            category += 1
+    if category < 5:
+        return False
+    return (total / category) < 0.2
+
+
+def parse_measures_sheet(rows, col_order, default_agency=None, sparse_totals=False):
     """Parse one measures sheet's rows into a flat list of impact records.
 
     col_order: sorted [(col_idx, fiscal_year), ...] from
@@ -415,6 +520,10 @@ def parse_measures_sheet(rows, col_order, default_agency=None):
     the filename-derived agency for the workbook this sheet came from) --
     used to seed `agency` at the start of each new measure so category
     lines without a preceding agency row still attribute correctly.
+
+    sparse_totals: see _uses_sparse_totals's own docstring -- relaxes the
+    agency-vs-new-measure disambiguation for the handful of agencies
+    whose own filings need it.
     """
     n_years = len(col_order)
     first_year_col = col_order[0][0]
@@ -429,6 +538,10 @@ def parse_measures_sheet(rows, col_order, default_agency=None):
     # category line -- applies to every category line under this measure
     # that doesn't carry its own program number.
     program_hint = []
+    # See LEADING_DASH_RE/HEADING_PREFIX_RE's own docstring -- tracks the
+    # most recent non-dash-prefixed title, for prefixing onto whichever
+    # bare-dash sibling bullet(s) follow it, if any.
+    pending_heading = None
     # True right after a "Total receipt/payment measures" grand total,
     # until the next section/part/title marker or a program-hint-shaped
     # measure name. The grand total's own breakdown rows that follow it
@@ -617,7 +730,7 @@ def parse_measures_sheet(rows, col_order, default_agency=None):
         # "Total"/section boundary in between to reset state first.
         hint = _parse_program_hint(_trailing_cells(row, start=idx + 1))
         if hint is not None:
-            measure = label
+            measure, pending_heading = _resolve_measure_title(label, pending_heading)
             agency = default_agency
             direction = None
             program_hint = hint
@@ -698,7 +811,7 @@ def parse_measures_sheet(rows, col_order, default_agency=None):
                 # "Departmental payments" line). We're not mid-agency-block
                 # here (no measure is currently open), so this row's label
                 # is the measure name, not a bogus "agency" named after it.
-                measure = label
+                measure, pending_heading = _resolve_measure_title(label, pending_heading)
                 agency = default_agency
                 prog_num_raw = _program_num_before(row, idx, first_year_col)
                 records.append({
@@ -729,7 +842,7 @@ def parse_measures_sheet(rows, col_order, default_agency=None):
             continue
 
         if state == "expect_measure":
-            measure = label
+            measure, pending_heading = _resolve_measure_title(label, pending_heading)
             agency = default_agency
             direction = None
             program_hint = []
@@ -739,6 +852,32 @@ def parse_measures_sheet(rows, col_order, default_agency=None):
             # state stays "expect_agency": still the same measure, still
             # waiting for a real agency or category line -- agency stays
             # default_agency, unaffected.
+        elif LEADING_DASH_RE.match(label):
+            # A sibling bullet under an earlier heading/first-bullet --
+            # see LEADING_DASH_RE's own docstring. Reads as a brand new
+            # sub-measure, never a real agency name (a genuine agency
+            # name is never itself dash-prefixed) -- checked before the
+            # generic `agency = label` fallback below so it isn't
+            # swallowed as bogus agency text for whatever measure was
+            # still open.
+            measure, pending_heading = _resolve_measure_title(label, pending_heading)
+            agency = default_agency
+            direction = None
+            program_hint = []
+            # state stays "expect_agency": this new measure's own
+            # category/data line is expected next, same as the
+            # state == "expect_measure" branch above.
+        elif sparse_totals:
+            # See _uses_sparse_totals's own docstring -- on a sheet
+            # detected to mostly omit per-measure "Total" rows, this
+            # same free-text-after-a-category-line shape is read as a
+            # new measure rather than a second agency for the still-open
+            # one, matching what every concretely-traced instance in
+            # these specific agencies' own files actually was.
+            measure, pending_heading = _resolve_measure_title(label, pending_heading)
+            agency = default_agency
+            direction = None
+            program_hint = []
         else:
             agency = label
             # state stays "expect_agency": category lines expected next
@@ -890,7 +1029,10 @@ def parse_workbook_measures(path):
         # silently breaking any join between the two tables on `agency`.
         # Using the same derivation as program_expenses keeps them joinable.
         default_agency = clean_agency(path)
-        for rec in parse_measures_sheet(rows, col_order, default_agency=default_agency):
+        sparse_totals = _uses_sparse_totals(rows)
+        for rec in parse_measures_sheet(
+            rows, col_order, default_agency=default_agency, sparse_totals=sparse_totals
+        ):
             if not rec["measure_name"] or not rec["agency"]:
                 continue
             if PLACEHOLDER_MEASURE_NAME_RE.match(rec["measure_name"]):
