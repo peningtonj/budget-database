@@ -99,17 +99,45 @@ export async function fetchMeasureText(name, edition) {
   return res.json();
 }
 
-// Every (measure_name, edition) pair in measure_impacts/measure_programs
-// (2025-26 Budget, 2024-25 Budget, 2024-25 MYEFO only -- the editions
-// measure_detail can actually render a page for), each with the
-// portfolios/agencies it touches. Fetched once and filtered client-side
-// by the search page -- see measure_list()'s own docstring for why.
+// Every (measure_name, edition) pair across every ingested edition, each
+// with the portfolios/agencies it touches and whether measure_detail can
+// render a $ breakdown for it. Fetched once and filtered client-side by
+// the search page -- see measure_list()'s own docstring for why. Gzipped
+// server-side (see settings.py's GZipMiddleware) but still a sizeable
+// payload on a slow connection, so also cached in localStorage:
+// cachedMeasureList() returns instantly (possibly stale) while this
+// function's own fresh fetch runs in the background -- see
+// SearchPage.svelte's own stale-while-revalidate use of both.
+const MEASURE_LIST_CACHE_KEY = "measureListCache.v1";
+
 export async function fetchMeasureList() {
   const res = await fetch(`${API_BASE}/measures/list/`);
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
   }
-  return res.json();
+  const data = await res.json();
+  try {
+    localStorage.setItem(MEASURE_LIST_CACHE_KEY, JSON.stringify(data));
+  } catch {
+    // Caching is a pure optimization (private browsing, a full/disabled
+    // localStorage, a payload that's grown past the quota) -- never worth
+    // failing the real fetch over.
+  }
+  return data;
+}
+
+// Synchronous, possibly-null, possibly-stale -- see fetchMeasureList's
+// own docstring. No expiry check: this data only ever changes on a
+// redeploy, and showing last-known results immediately while a fresh
+// fetch quietly confirms/replaces them in the background is strictly
+// better than a blank "Loading…" screen for however long that takes.
+export function cachedMeasureList() {
+  try {
+    const raw = localStorage.getItem(MEASURE_LIST_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
 }
 
 // Resolves a short shareable-URL id (?m=<id>) back to {measure_name,

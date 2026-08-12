@@ -1,10 +1,36 @@
 <script>
-  import { fetchMeasureList, fetchMeasureTextSearch, fetchMeasureTopicSearch } from "./api.js";
+  import { fetchMeasureList, cachedMeasureList, fetchMeasureTextSearch, fetchMeasureTopicSearch } from "./api.js";
   import MultiSelectFilter from "./MultiSelectFilter.svelte";
 
   let { onselect } = $props();
 
-  let listPromise = $derived(fetchMeasureList());
+  // Stale-while-revalidate (see fetchMeasureList/cachedMeasureList's own
+  // docstrings): a cached copy, if any, populates `measures` synchronously
+  // on first render -- Name-mode search and the filters are usable
+  // immediately, not blocked behind a slow/proxied round trip -- while the
+  // real fetch below quietly confirms or replaces it. Only a true first-
+  // ever visit (no cache yet) sees `measuresLoading` with nothing to show.
+  const cached = cachedMeasureList();
+  let measures = $state(cached ?? []);
+  let measuresLoading = $state(cached === null);
+  let measuresError = $state(null);
+
+  $effect(() => {
+    fetchMeasureList()
+      .then((m) => {
+        measures = m;
+        measuresError = null;
+      })
+      .catch((e) => {
+        // A failed background revalidation still leaves stale cached
+        // results on screen -- only surface the error if there was
+        // nothing to fall back on.
+        if (measures.length === 0) measuresError = e.message;
+      })
+      .finally(() => {
+        measuresLoading = false;
+      });
+  });
 
   /** @type {"name" | "text" | "topic"} */
   let mode = $state("name");
@@ -21,6 +47,8 @@
 
   const RESULT_CAP = 100;
   const TEXT_SEARCH_DEBOUNCE_MS = 300;
+
+  let isServerMode = $derived(mode === "text" || mode === "topic");
 
   function portfolioOptions(measures) {
     // A handful of measures (2017-18 MYEFO, ~78 of them) carry an empty-
@@ -114,118 +142,119 @@
     <h1>Measures</h1>
     <p class="section-note">
       Covers every ingested Budget/MYEFO edition, 2015-16 through 2025-26.
-      Only 2025-26 Budget, 2024-25 Budget and 2024-25 MYEFO have full
-      per-agency $ impact/program data ("financial data" below) -- other
-      editions show the Budget Paper No. 2 write-up alone (see KNOWN_GAPS.md).
+      Most editions have full per-agency $ impact/program data ("financial
+      data" below); a few older/partial ones show the Budget Paper No. 2
+      write-up alone (see KNOWN_GAPS.md).
     </p>
   </header>
 
-  {#await listPromise}
-    <p class="status">Loading…</p>
-  {:then measures}
-    {@const isServerMode = mode === "text" || mode === "topic"}
-    <div class="mode-toggle">
-      <button class:active={mode === "name"} onclick={() => (mode = "name")}>
-        Measure name
-      </button>
-      <button class:active={mode === "text"} onclick={() => (mode = "text")}>
-        Measure text
-      </button>
-      <button class:active={mode === "topic"} onclick={() => (mode = "topic")}>
-        Topic
-      </button>
-    </div>
+  <div class="mode-toggle">
+    <button class:active={mode === "name"} onclick={() => (mode = "name")}>
+      Measure name
+    </button>
+    <button class:active={mode === "text"} onclick={() => (mode = "text")}>
+      Measure text
+    </button>
+    <button class:active={mode === "topic"} onclick={() => (mode = "topic")}>
+      Topic
+    </button>
+  </div>
 
-    <div class="controls">
-      <input
-        class="query"
-        type="text"
-        placeholder={mode === "name"
-          ? "Search measure name…"
-          : mode === "text"
-            ? "Search measure text…"
-            : "Search by topic, e.g. “child care”…"}
-        bind:value={query}
-      />
-    </div>
+  <div class="controls">
+    <input
+      class="query"
+      type="text"
+      placeholder={mode === "name"
+        ? "Search measure name…"
+        : mode === "text"
+          ? "Search measure text…"
+          : "Search by topic, e.g. “child care”…"}
+      bind:value={query}
+    />
+  </div>
 
-    <div class="filters">
-      <MultiSelectFilter
-        label="Budget round"
-        placeholder="Add a budget round…"
-        options={editionOptions(measures)}
-        bind:selected={selectedEditions}
-      />
-      <MultiSelectFilter
-        label="Portfolio"
-        placeholder="Add a portfolio…"
-        options={portfolioOptions(measures)}
-        bind:selected={selectedPortfolios}
-      />
-    </div>
+  <div class="filters">
+    <MultiSelectFilter
+      label="Budget round"
+      placeholder="Add a budget round…"
+      options={editionOptions(measures)}
+      bind:selected={selectedEditions}
+    />
+    <MultiSelectFilter
+      label="Portfolio"
+      placeholder="Add a portfolio…"
+      options={portfolioOptions(measures)}
+      bind:selected={selectedPortfolios}
+    />
+  </div>
 
-    {#if mode === "topic"}
-      <p class="section-note topic-note">
-        Matches measures by what they're about, not just exact wording — e.g.
-        "child care" also surfaces measures that only say "Early Childhood
-        Education and Care (ECEC)".
-      </p>
-    {/if}
+  {#if mode === "topic"}
+    <p class="section-note topic-note">
+      Matches measures by what they're about, not just exact wording — e.g.
+      "child care" also surfaces measures that only say "Early Childhood
+      Education and Care (ECEC)".
+    </p>
+  {/if}
 
-    {#if isServerMode && !query.trim()}
-      <p class="status">
-        {mode === "text" ? "Type to search the measure write-ups themselves." : "Type a topic to search for."}
-      </p>
+  {#if mode === "name" && measures.length === 0}
+    {#if measuresLoading}
+      <p class="status">Loading measures…</p>
+    {:else if measuresError}
+      <p class="status error">{measuresError}</p>
     {:else}
-      {@const displayResults =
-        mode === "name"
-          ? filterByName(measures, query, selectedPortfolios, selectedEditions)
-          : filterServerResults(serverResults, selectedPortfolios, selectedEditions)}
-      <p class="count">
-        {#if isServerMode && serverLoading}
-          Searching…
-        {:else}
-          {displayResults.length} measure{displayResults.length === 1 ? "" : "s"}
-          {#if displayResults.length > RESULT_CAP}
-            (showing first {RESULT_CAP} — refine your search)
-          {/if}
-        {/if}
-      </p>
-      {#if isServerMode && serverError}
-        <p class="status error">{serverError}</p>
+      <p class="status">No measures match.</p>
+    {/if}
+  {:else if isServerMode && !query.trim()}
+    <p class="status">
+      {mode === "text" ? "Type to search the measure write-ups themselves." : "Type a topic to search for."}
+    </p>
+  {:else}
+    {@const displayResults =
+      mode === "name"
+        ? filterByName(measures, query, selectedPortfolios, selectedEditions)
+        : filterServerResults(serverResults, selectedPortfolios, selectedEditions)}
+    <p class="count">
+      {#if isServerMode && serverLoading}
+        Searching…
       {:else}
-        <ul class="results">
-          {#each displayResults.slice(0, RESULT_CAP) as m (m.measure_id)}
-            <li>
-              <button class="result" onclick={() => onselect(m.measure_id, m.measure_name, m.edition)}>
-                <span class="name">{m.measure_name}</span>
-                {#if m.snippet}
-                  <p class="snippet">{m.snippet}</p>
-                {/if}
-                <span class="meta">
-                  <span class="edition-badge">{m.edition}</span>
-                  {#if !m.has_financial_data}
-                    <span class="text-only-badge">text only</span>
-                  {/if}
-                  {#if mode === "topic" && m.score != null}
-                    <span class="score-badge">{Math.round(m.score * 100)}% match</span>
-                  {/if}
-                  {#each m.portfolios as p}
-                    <span class="portfolio-badge">{p}</span>
-                  {/each}
-                </span>
-              </button>
-            </li>
-          {/each}
-        </ul>
-        {#if displayResults.length === 0 && !(isServerMode && serverLoading)}
-          <p class="status">No measures match.</p>
+        {displayResults.length} measure{displayResults.length === 1 ? "" : "s"}
+        {#if displayResults.length > RESULT_CAP}
+          (showing first {RESULT_CAP} — refine your search)
         {/if}
       {/if}
+    </p>
+    {#if isServerMode && serverError}
+      <p class="status error">{serverError}</p>
+    {:else}
+      <ul class="results">
+        {#each displayResults.slice(0, RESULT_CAP) as m (m.measure_id)}
+          <li>
+            <button class="result" onclick={() => onselect(m.measure_id, m.measure_name, m.edition)}>
+              <span class="name">{m.measure_name}</span>
+              {#if m.snippet}
+                <p class="snippet">{m.snippet}</p>
+              {/if}
+              <span class="meta">
+                <span class="edition-badge">{m.edition}</span>
+                {#if !m.has_financial_data}
+                  <span class="text-only-badge">text only</span>
+                {/if}
+                {#if mode === "topic" && m.score != null}
+                  <span class="score-badge">{Math.round(m.score * 100)}% match</span>
+                {/if}
+                {#each m.portfolios as p}
+                  <span class="portfolio-badge">{p}</span>
+                {/each}
+              </span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+      {#if displayResults.length === 0 && !(isServerMode && serverLoading)}
+        <p class="status">No measures match.</p>
+      {/if}
     {/if}
-  {:catch error}
-    <p class="status error">{error.message}</p>
-  {/await}
+  {/if}
 </div>
 
 <style>

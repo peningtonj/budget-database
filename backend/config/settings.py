@@ -64,6 +64,16 @@ MIDDLEWARE = [
     # would 404 on DRF's own browsable-API CSS/JS and the admin's
     # styling, even though the actual JSON endpoints work fine.
     "whitenoise.middleware.WhiteNoiseMiddleware",
+    # measure_list's own JSON (a few thousand rows, fetched in full --
+    # see its own docstring for why) is ~1.3MB uncompressed but ~195KB
+    # gzipped, a 6.7x cut that matters a lot on a slow/proxied
+    # connection. WhiteNoise's own compression above only covers static
+    # files (JS/CSS), never API responses -- this is what actually
+    # shrinks JSON. Django's GZipMiddleware compresses any response
+    # >200 bytes whose client sends `Accept-Encoding: gzip` (every real
+    # browser does); must sit before CommonMiddleware since it needs to
+    # see the final response body.
+    "django.middleware.gzip.GZipMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
