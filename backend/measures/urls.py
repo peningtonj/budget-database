@@ -14,6 +14,7 @@ urlpatterns = [
     path("text/", views.measure_text, name="measure-text"),
     path("list/", views.measure_list, name="measure-list"),
     path("by-id/", views.measure_by_id, name="measure-by-id"),
+    path("combined/", views.measure_combined, name="measure-combined"),
     path("search-text/", views.measure_text_search, name="measure-text-search"),
     path("search-topic/", views.measure_topic_search, name="measure-topic-search"),
 ]

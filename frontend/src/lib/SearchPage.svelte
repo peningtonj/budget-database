@@ -1,8 +1,11 @@
 <script>
   import { fetchMeasureList, cachedMeasureList, fetchMeasureTextSearch, fetchMeasureTopicSearch } from "./api.js";
   import MultiSelectFilter from "./MultiSelectFilter.svelte";
+  import { tray, isInTray, toggleInTray, addToTray, clearTray } from "./measureTray.svelte.js";
 
-  let { onselect } = $props();
+  let { onselect, onViewSet } = $props();
+
+  const MIN_TO_COMPARE = 2;
 
   // Stale-while-revalidate (see fetchMeasureList/cachedMeasureList's own
   // docstrings): a cached copy, if any, populates `measures` synchronously
@@ -139,13 +142,33 @@
 
 <div class="page">
   <header>
-    <h1>Measures</h1>
-    <p class="section-note">
-      Covers every ingested Budget/MYEFO edition, 2015-16 through 2025-26.
-      Most editions have full per-agency $ impact/program data ("financial
-      data" below); a few older/partial ones show the Budget Paper No. 2
-      write-up alone (see KNOWN_GAPS.md).
-    </p>
+    <div class="header-row">
+      <div>
+        <h1>Measures</h1>
+        <p class="section-note">
+          Covers every ingested Budget/MYEFO edition, 2015-16 through 2025-26.
+          Most editions have full per-agency $ impact/program data ("financial
+          data" below); a few older/partial ones show the Budget Paper No. 2
+          write-up alone (see KNOWN_GAPS.md).
+        </p>
+      </div>
+      {#if tray.length > 0}
+        <div class="tray-actions">
+          <button type="button" class="clear-btn" onclick={clearTray}>
+            Clear comparisons
+          </button>
+          <button
+            type="button"
+            class="compare-btn"
+            disabled={tray.length < MIN_TO_COMPARE}
+            title={tray.length < MIN_TO_COMPARE ? `Select at least ${MIN_TO_COMPARE} measures to compare` : ""}
+            onclick={() => onViewSet(tray.map((m) => m.measure_id))}
+          >
+            Compare {tray.length} selected measure{tray.length === 1 ? "" : "s"} →
+          </button>
+        </div>
+      {/if}
+    </div>
   </header>
 
   <div class="mode-toggle">
@@ -213,22 +236,41 @@
       mode === "name"
         ? filterByName(measures, query, selectedPortfolios, selectedEditions)
         : filterServerResults(serverResults, selectedPortfolios, selectedEditions)}
-    <p class="count">
-      {#if isServerMode && serverLoading}
-        Searching…
-      {:else}
-        {displayResults.length} measure{displayResults.length === 1 ? "" : "s"}
-        {#if displayResults.length > RESULT_CAP}
-          (showing first {RESULT_CAP} — refine your search)
+    <div class="results-toolbar">
+      <p class="count">
+        {#if isServerMode && serverLoading}
+          Searching…
+        {:else}
+          {displayResults.length} measure{displayResults.length === 1 ? "" : "s"}
+          {#if displayResults.length > RESULT_CAP}
+            (showing first {RESULT_CAP} — refine your search)
+          {/if}
         {/if}
+      </p>
+      {#if displayResults.length > 0}
+        <button
+          type="button"
+          class="select-all"
+          onclick={() => displayResults.slice(0, RESULT_CAP).forEach(addToTray)}
+        >
+          Select all {Math.min(displayResults.length, RESULT_CAP)} for comparison
+        </button>
       {/if}
-    </p>
+    </div>
     {#if isServerMode && serverError}
       <p class="status error">{serverError}</p>
     {:else}
       <ul class="results">
         {#each displayResults.slice(0, RESULT_CAP) as m (m.measure_id)}
           <li>
+            <input
+              type="checkbox"
+              class="tray-checkbox"
+              checked={isInTray(m.measure_id)}
+              onclick={(e) => e.stopPropagation()}
+              onchange={() => toggleInTray(m)}
+              aria-label={`Add ${m.measure_name} to comparison`}
+            />
             <button class="result" onclick={() => onselect(m.measure_id, m.measure_name, m.edition)}>
               <span class="name">{m.measure_name}</span>
               {#if m.snippet}
@@ -266,9 +308,54 @@
   header {
     margin-bottom: 1.5rem;
   }
+  .header-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.75rem 1rem;
+  }
   h1 {
     font-size: 1.6rem;
     margin: 0 0 0.4rem;
+  }
+  .tray-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-shrink: 0;
+  }
+  .clear-btn {
+    font: inherit;
+    font-size: 0.82rem;
+    padding: 0.5rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .clear-btn:hover {
+    color: var(--text-h);
+    border-color: var(--text-muted);
+  }
+  .compare-btn {
+    flex-shrink: 0;
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 0.5rem 0.9rem;
+    border: 1px solid var(--text-h);
+    border-radius: 6px;
+    background: var(--text-h);
+    color: var(--bg);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .compare-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
   .section-note {
     font-size: 0.82rem;
@@ -327,10 +414,32 @@
     outline: 2px solid var(--text-h);
     outline-offset: -1px;
   }
+  .results-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin: 0 0 0.6rem;
+  }
   .count {
     font-size: 0.8rem;
     color: var(--text-muted);
-    margin: 0 0 0.6rem;
+    margin: 0;
+  }
+  .select-all {
+    font: inherit;
+    font-size: 0.78rem;
+    padding: 0.3rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .select-all:hover {
+    color: var(--text-h);
+    border-color: var(--text-muted);
   }
   .results {
     list-style: none;
@@ -338,16 +447,27 @@
     padding: 0;
     border-top: 1px solid var(--border-faint);
   }
+  .results li {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    border-bottom: 1px solid var(--border-faint);
+  }
+  .tray-checkbox {
+    flex-shrink: 0;
+    margin-top: 0.9rem;
+    cursor: pointer;
+  }
   .result {
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
     width: 100%;
+    min-width: 0;
     text-align: left;
     font: inherit;
     padding: 0.7rem 0.4rem;
     border: none;
-    border-bottom: 1px solid var(--border-faint);
     background: none;
     cursor: pointer;
     color: var(--text);

@@ -1,5 +1,6 @@
 <script>
   import { fetchMeasureText } from "./api.js";
+  import { isInTray, toggleInTray } from "./measureTray.svelte.js";
 
   // hasFinancialData: false when the page has no measure_impacts/
   // measure_programs row to show (18 of the 21 ingested BP2 editions --
@@ -65,8 +66,26 @@
           been ingested for this edition (see KNOWN_GAPS.md).
         {/if}
       </p>
-      {#if !hasFinancialData && text.portfolio}
-        <p class="portfolio-line"><span class="portfolio-badge">{text.portfolio}</span></p>
+      {#if !hasFinancialData}
+        <p class="portfolio-line">
+          {#if text.portfolio}<span class="portfolio-badge">{text.portfolio}</span>{/if}
+          <button
+            type="button"
+            class="tray-toggle"
+            class:active={isInTray(text.measure_id)}
+            onclick={() =>
+              toggleInTray({
+                measure_id: text.measure_id,
+                measure_name: text.measure_name,
+                edition: text.edition,
+                portfolios: text.portfolio ? [text.portfolio] : [],
+                agencies: [],
+                has_financial_data: false,
+              })}
+          >
+            {isInTray(text.measure_id) ? "✓ In comparison" : "+ Add to comparison"}
+          </button>
+        </p>
       {/if}
 
       {#each groupBlocks(nestComponents(text.components)) as block}
@@ -95,12 +114,34 @@
           <span class="related-label">Related measures</span>
           <div class="related-list">
             {#each text.related_measures as r}
-              <button
-                class="related-badge"
-                onclick={() => onselect(r.measure_id, r.measure_name, r.edition)}
-              >
-                {r.phrase}
-              </button>
+              <span class="related-pair">
+                <button
+                  class="related-badge"
+                  onclick={() => onselect(r.measure_id, r.measure_name, r.edition)}
+                >
+                  {r.phrase}
+                </button>
+                <button
+                  type="button"
+                  class="related-add"
+                  class:active={isInTray(r.measure_id)}
+                  onclick={() =>
+                    toggleInTray({
+                      measure_id: r.measure_id,
+                      measure_name: r.measure_name,
+                      edition: r.edition,
+                      portfolios: [],
+                      agencies: [],
+                      has_financial_data: true,
+                    })}
+                  aria-label={isInTray(r.measure_id)
+                    ? `Remove ${r.measure_name} from comparison`
+                    : `Add ${r.measure_name} to comparison`}
+                  title={isInTray(r.measure_id) ? "In comparison" : "Add to comparison"}
+                >
+                  {isInTray(r.measure_id) ? "✓" : "+"}
+                </button>
+              </span>
             {/each}
           </div>
         </div>
@@ -147,6 +188,9 @@
     margin: -0.4rem 0 1rem;
   }
   .portfolio-line {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
     margin: 0 0 1rem;
   }
   .portfolio-badge {
@@ -157,6 +201,26 @@
     background: var(--surface-accent);
     color: var(--text-muted);
     border: 1px solid var(--border);
+  }
+  .tray-toggle {
+    font: inherit;
+    font-size: 0.75rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tray-toggle:hover {
+    border-color: var(--text-muted);
+    color: var(--text-h);
+  }
+  .tray-toggle.active {
+    background: var(--text-h);
+    border-color: var(--text-h);
+    color: var(--bg);
   }
   .prose {
     font-size: 0.92rem;
@@ -196,6 +260,33 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
+  }
+  .related-pair {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+  }
+  .related-add {
+    font: inherit;
+    font-size: 0.8rem;
+    line-height: 1;
+    width: 1.5rem;
+    height: 1.5rem;
+    padding: 0;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .related-add:hover {
+    border-color: var(--text-muted);
+    color: var(--text-h);
+  }
+  .related-add.active {
+    background: var(--text-h);
+    border-color: var(--text-h);
+    color: var(--bg);
   }
   .related-badge {
     font: inherit;

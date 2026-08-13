@@ -237,6 +237,33 @@ def _agency_history(agency, portfolio):
     return short_names
 
 
+def _display_agency(agency, edition):
+    """Cleans up a raw agency string for display -- same idea as
+    _canon_portfolio() for portfolios. Most editions' measure_impacts/
+    measure_programs.agency is already a formal, human-typed name (e.g.
+    "Services Australia"), so this is a no-op for them. A few editions
+    (e.g. 2022-23 October Budget, a rushed one-off with abbreviated PBS
+    workbooks) instead stored the filename-derived short form directly
+    (e.g. "OCT EDU") -- agency_aliases already has that exact pairing
+    (short_name "OCT EDU" -> formal_name "Department of Education", from
+    that agency's own Table 1.1 title), so look it up and use the formal
+    name instead.
+
+    Safe for the frontend to feed straight back into
+    agency_outcome_profile() for a drilldown, unlike portfolio (see
+    measure_detail's own docstring): _agency_history() above already
+    checks both the short_name and formal_name direction, so either
+    form resolves to the same result. Falls through to the raw value
+    unchanged if no alias row matches.
+    """
+    formal_name = (
+        AgencyAlias.objects.filter(edition=edition, short_name=agency)
+        .values_list("formal_name", flat=True)
+        .first()
+    )
+    return formal_name or agency
+
+
 def _stitch_series(rows, latest_edition=LATEST_BUDGET_EDITION):
     """rows: dicts with fiscal_year, estimate_type, edition, amount_thousands
     -- possibly several rows sharing the same (fiscal_year, estimate_type,
@@ -301,12 +328,28 @@ def measure_detail(request):
             {"detail": "name and edition query params are required"}, status=400
         )
 
+    detail = _build_measure_detail(measure_name, edition)
+    if detail is None:
+        return Response({"detail": "not found"}, status=404)
+
+    return Response(detail)
+
+
+def _build_measure_detail(measure_name, edition):
+    """The shared body of measure_detail(): every $ impact and touched
+    program for one (measure_name, edition), or None if neither
+    measure_impacts nor measure_programs has a row for it (a BP2-only
+    measure -- see measure_text() for that case instead). Factored out
+    of measure_detail() so measure_combined() (below) can build the same
+    per-measure shape for several measures in one request, without a
+    frontend round trip per measure."""
     impacts = MeasureImpact.objects.filter(measure_name=measure_name, edition=edition)
     programs = MeasureProgram.objects.filter(measure_name=measure_name, edition=edition)
 
     if not impacts.exists() and not programs.exists():
-        return Response({"detail": "not found"}, status=404)
+        return None
 
+    measure_id = (impacts.first() or programs.first()).measure_id
     budget_year = _budget_year(edition)
     agencies_touched = {p.agency for p in programs}
     # Alias chain per (agency, portfolio) touched, not a single-budget_year
@@ -374,18 +417,36 @@ def measure_detail(request):
         )
 
     portfolios = sorted({i.portfolio for i in impacts} | {p.portfolio for p in programs})
-    agencies = sorted(agencies_touched | {i.agency for i in impacts})
 
-    return Response(
-        {
-            "measure_name": measure_name,
-            "edition": edition,
-            "portfolios": portfolios,
-            "agencies": agencies,
-            "impacts": MeasureImpactSerializer(impacts, many=True).data,
-            "programs": program_data,
-        }
-    )
+    # Cleaned up for display -- see _display_agency's own docstring for
+    # why this is safe even for the badge that gets fed back into
+    # agency_outcome_profile(), unlike portfolios above. One lookup per
+    # distinct raw agency string, then applied consistently everywhere
+    # it appears (the top-level list, each impact row, each program
+    # row) so a badge, a chart's agency picker, and a table row all
+    # agree -- and so downstream string matching (e.g. MeasurePage's own
+    # selectAgency, which looks up a program by its agency string)
+    # still finds the row it's looking for.
+    raw_agencies = agencies_touched | {i.agency for i in impacts}
+    agency_display = {a: _display_agency(a, edition) for a in raw_agencies}
+
+    impacts_data = MeasureImpactSerializer(impacts, many=True).data
+    for row in impacts_data:
+        row["agency"] = agency_display.get(row["agency"], row["agency"])
+    for row in program_data:
+        row["agency"] = agency_display.get(row["agency"], row["agency"])
+
+    agencies = sorted({agency_display.get(a, a) for a in raw_agencies})
+
+    return {
+        "measure_id": measure_id,
+        "measure_name": measure_name,
+        "edition": edition,
+        "portfolios": portfolios,
+        "agencies": agencies,
+        "impacts": impacts_data,
+        "programs": program_data,
+    }
 
 
 @api_view(["GET"])
@@ -701,6 +762,7 @@ def measure_text(request):
 
     return Response(
         {
+            "measure_id": text.measure_id,
             "measure_name": text.measure_name,
             "edition": text.edition,
             "portfolio": text.portfolio,
@@ -810,6 +872,102 @@ def measure_by_id(request):
     if row is None:
         return Response({"detail": "not found"}, status=404)
     return Response(row)
+
+
+def _resolve_measure_ids(measure_ids):
+    """Bulk id -> (measure_name, edition) resolution for measure_combined()
+    below -- one query per source table (impacts, programs, text)
+    covering every requested id at once, rather than one query per id,
+    since this list can be 10+ long. Same precedence as measure_by_id:
+    measure_impacts, then measure_programs, then measure_text, so a
+    BP2-only measure still resolves via the third source."""
+    remaining = set(measure_ids)
+    resolved = {}
+    for model in (MeasureImpact, MeasureProgram, MeasureText):
+        if not remaining:
+            break
+        for row in model.objects.filter(measure_id__in=remaining).values(
+            "measure_id", "measure_name", "edition"
+        ):
+            resolved.setdefault(row["measure_id"], (row["measure_name"], row["edition"]))
+        remaining -= resolved.keys()
+    return resolved
+
+
+@api_view(["GET"])
+def measure_combined(request):
+    """?ids=<id1,id2,...> -> per-measure detail (the same shape
+    _build_measure_detail returns for one measure via measure_detail/)
+    for several measures in one request -- built for the multi-measure
+    comparison page, which needs every selected measure's data at once
+    (e.g. to compute which agency received the largest combined $
+    before it can even pick a default chart), so N parallel calls to
+    detail/ would mean N round trips just to get to that point. Ids that
+    don't resolve to any measure at all (a stale/typo'd id) are reported
+    in not_found rather than failing the whole batch.
+
+    portfolios here ARE run through _canon_portfolio() -- unlike
+    measure_detail's own (deliberately raw) field. That field stays raw
+    because it feeds portfolio_profile()'s exact-match join; this page
+    has no drilldown, so the cleaned-up display form is safe here (same
+    reasoning measure_list already uses its own _canon_portfolio() call
+    for).
+
+    Deliberately excludes each measure's own BP2 write-up
+    (full_measure_text/components/related_measures/headline_financials)
+    -- a separate, larger payload the frontend fetches lazily per
+    measure via the existing text/ endpoint, only once that measure's
+    own row is expanded on the page. Keeping it out of this response
+    means a 10+ measure selection doesn't block the whole page behind
+    10+ write-ups fetched up front.
+    """
+    ids_param = request.query_params.get("ids", "")
+    ids = [i.strip() for i in ids_param.split(",") if i.strip()]
+    if not ids:
+        return Response({"detail": "ids query param is required"}, status=400)
+
+    resolved = _resolve_measure_ids(ids)
+
+    measures = []
+    not_found = []
+    for measure_id in ids:
+        hit = resolved.get(measure_id)
+        if hit is None:
+            not_found.append(measure_id)
+            continue
+        measure_name, edition = hit
+        detail = _build_measure_detail(measure_name, edition)
+        if detail is None:
+            # BP2-only measure -- no measure_impacts/measure_programs row,
+            # so no $ data, but it still belongs in the comparison set's
+            # own measures list (its write-up is still readable there).
+            text = MeasureText.objects.filter(
+                measure_name=measure_name, edition=edition
+            ).first()
+            measures.append(
+                {
+                    "measure_id": measure_id,
+                    "measure_name": measure_name,
+                    "edition": edition,
+                    "portfolios": [_canon_portfolio(text.portfolio)]
+                    if text and text.portfolio
+                    else [],
+                    "agencies": [],
+                    "has_financial_data": False,
+                    "impacts": [],
+                    "programs": [],
+                }
+            )
+        else:
+            measures.append(
+                {
+                    **detail,
+                    "portfolios": [_canon_portfolio(p) for p in detail["portfolios"]],
+                    "has_financial_data": True,
+                }
+            )
+
+    return Response({"measures": measures, "not_found": not_found})
 
 
 def _snippet(text, query, context=60):

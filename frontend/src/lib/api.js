@@ -158,6 +158,22 @@ export async function resolveMeasureId(id) {
   return res.json();
 }
 
+// Batched per-measure detail (the same shape fetchMeasureDetail returns
+// for one measure) for several measures at once -- CombinedMeasuresPage's
+// one blocking fetch, so viewing a 10+ measure comparison set costs one
+// round trip instead of N. See measure_combined()'s own docstring for the
+// exact response shape, including `not_found` for any stale/typo'd id.
+export async function fetchMeasureCombined(ids) {
+  const url = new URL(`${API_BASE}/measures/combined/`);
+  url.searchParams.set("ids", ids.join(","));
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 // Server-side search over BP2 write-up text (intro/end prose and
 // bulleted components), not the client-side-filtered name list --
 // see measure_text_search()'s own docstring for why. Each result

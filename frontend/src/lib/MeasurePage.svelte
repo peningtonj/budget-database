@@ -6,6 +6,7 @@
   import ImpactTable from "./ImpactTable.svelte";
   import ProgramsTouched from "./ProgramsTouched.svelte";
   import MeasureText from "./MeasureText.svelte";
+  import { isInTray, toggleInTray } from "./measureTray.svelte.js";
 
   let { name, edition, onselect } = $props();
 
@@ -53,7 +54,25 @@
     {#if detail}
       <header>
         <span class="edition-badge">{detail.edition}</span>
-        <h1>{detail.measure_name}</h1>
+        <div class="title-row">
+          <h1>{detail.measure_name}</h1>
+          <button
+            type="button"
+            class="tray-toggle"
+            class:active={isInTray(detail.measure_id)}
+            onclick={() =>
+              toggleInTray({
+                measure_id: detail.measure_id,
+                measure_name: detail.measure_name,
+                edition: detail.edition,
+                portfolios: detail.portfolios,
+                agencies: detail.agencies,
+                has_financial_data: true,
+              })}
+          >
+            {isInTray(detail.measure_id) ? "✓ In comparison" : "+ Add to comparison"}
+          </button>
+        </div>
         <div class="badges">
           {#each detail.portfolios as p}
             <button
@@ -173,7 +192,35 @@
   h1 {
     font-size: 1.6rem;
     line-height: 1.3;
-    margin: 0 0 0.75rem;
+    margin: 0;
+  }
+  .title-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.9rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.75rem;
+  }
+  .tray-toggle {
+    flex-shrink: 0;
+    font: inherit;
+    font-size: 0.78rem;
+    padding: 0.25rem 0.65rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tray-toggle:hover {
+    border-color: var(--text-muted);
+    color: var(--text-h);
+  }
+  .tray-toggle.active {
+    background: var(--text-h);
+    border-color: var(--text-h);
+    color: var(--bg);
   }
   .badges {
     display: flex;
