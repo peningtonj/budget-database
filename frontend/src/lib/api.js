@@ -178,11 +178,18 @@ export async function fetchMeasureCombined(ids) {
 // bulleted components), not the client-side-filtered name list --
 // see measure_text_search()'s own docstring for why. Each result
 // includes a snippet showing the match in context.
-export async function fetchMeasureTextSearch(query) {
+//
+// Both this and fetchMeasureTopicSearch below take an optional
+// AbortSignal -- SearchPage.svelte uses it to cancel a still-in-flight
+// request when a newer query supersedes it (typing ahead) or when it's
+// taking too long, so a slow response can't land late and overwrite
+// fresher results, and a stuck request doesn't spin forever with no
+// way out.
+export async function fetchMeasureTextSearch(query, { signal } = {}) {
   const url = new URL(`${API_BASE}/measures/search-text/`);
   url.searchParams.set("q", query);
 
-  const res = await fetch(url);
+  const res = await fetch(url, { signal });
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
   }
@@ -196,11 +203,15 @@ export async function fetchMeasureTextSearch(query) {
 // that only ever says "Early Childhood Education and Care (ECEC)").
 // Same result shape as fetchMeasureTextSearch, plus a `score` (0..1
 // similarity) since there's no exact match position for a snippet.
-export async function fetchMeasureTopicSearch(query) {
+// The heaviest of the three search modes -- an embedding model has to
+// run server-side on every query, not just a DB lookup -- so it's the
+// one most exposed to a cold/slow backend (see SearchPage's own
+// timeout handling).
+export async function fetchMeasureTopicSearch(query, { signal } = {}) {
   const url = new URL(`${API_BASE}/measures/search-topic/`);
   url.searchParams.set("q", query);
 
-  const res = await fetch(url);
+  const res = await fetch(url, { signal });
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
   }

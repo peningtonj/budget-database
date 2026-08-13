@@ -49,7 +49,25 @@
   let selectedEditions = $state([]);
 
   const RESULT_CAP = 100;
-  const TEXT_SEARCH_DEBOUNCE_MS = 300;
+  // Longer than name-mode's instant client-side filtering needs, on
+  // purpose: text/topic search is a real server round trip (topic mode
+  // especially -- an embedding model runs per query, not just a DB
+  // lookup), so a short debounce just means firing, then immediately
+  // discarding, a request for every half-typed word ("chi", "chil",
+  // "child"...) on top of the one for what was actually typed.
+  const SERVER_SEARCH_DEBOUNCE_MS = 600;
+  // Below this, a text/topic query is too short to be a meaningful
+  // search anyway -- not worth a round trip (or, for topic mode, an
+  // embedding computation) just to throw the result away a keystroke
+  // later.
+  const SERVER_SEARCH_MIN_LENGTH = 3;
+  // Generous on purpose: the backend can be genuinely slow to respond
+  // to the *first* request after sitting idle (a free-tier host spun
+  // down after inactivity has to cold-boot, and topic mode additionally
+  // loads an embedding model into memory on that first query) -- this
+  // is a backstop against a request hanging forever with no feedback,
+  // not a target latency.
+  const SERVER_SEARCH_TIMEOUT_MS = 20000;
 
   let isServerMode = $derived(mode === "text" || mode === "topic");
 
@@ -119,7 +137,7 @@
   $effect(() => {
     const q = query.trim();
     const fetcher = SERVER_SEARCH_FETCHERS[mode];
-    if (!fetcher || !q) {
+    if (!fetcher || q.length < SERVER_SEARCH_MIN_LENGTH) {
       serverResults = [];
       serverLoading = false;
       serverError = null;
@@ -127,16 +145,40 @@
     }
     serverLoading = true;
     serverError = null;
-    const handle = setTimeout(async () => {
+    // One controller for both cancellation paths below -- a genuinely
+    // slow response can't land after a newer query has already taken
+    // over (aborted by this effect's own cleanup, re-running on every
+    // keystroke same as the debounce timer) or hang indefinitely with
+    // no feedback (aborted by the timeout, once actually in flight).
+    const controller = new AbortController();
+    let timedOut = false;
+    const debounceHandle = setTimeout(async () => {
+      const timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, SERVER_SEARCH_TIMEOUT_MS);
       try {
-        serverResults = await fetcher(q);
+        serverResults = await fetcher(q, { signal: controller.signal });
+        serverError = null;
       } catch (e) {
-        serverError = e.message;
+        if (timedOut) {
+          serverError = "Search timed out -- the server may be waking up from idle. Try again in a moment.";
+        } else if (e.name !== "AbortError") {
+          serverError = e.message;
+        }
+        // A plain AbortError here (not our own timeout) means a newer
+        // query superseded this one via the cleanup below -- that
+        // newer effect run owns serverLoading/serverError now, nothing
+        // to show for this one.
       } finally {
+        clearTimeout(timeoutHandle);
         serverLoading = false;
       }
-    }, TEXT_SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(handle);
+    }, SERVER_SEARCH_DEBOUNCE_MS);
+    return () => {
+      clearTimeout(debounceHandle);
+      controller.abort();
+    };
   });
 </script>
 
@@ -227,9 +269,13 @@
     {:else}
       <p class="status">No measures match.</p>
     {/if}
-  {:else if isServerMode && !query.trim()}
+  {:else if isServerMode && query.trim().length < SERVER_SEARCH_MIN_LENGTH}
     <p class="status">
-      {mode === "text" ? "Type to search the measure write-ups themselves." : "Type a topic to search for."}
+      {#if query.trim()}
+        Keep typing — at least {SERVER_SEARCH_MIN_LENGTH} characters to search.
+      {:else}
+        {mode === "text" ? "Type to search the measure write-ups themselves." : "Type a topic to search for."}
+      {/if}
     </p>
   {:else}
     {@const displayResults =
