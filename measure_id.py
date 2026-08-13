@@ -63,3 +63,25 @@ class MeasureIdAssigner:
 
     def count(self):
         return len(self._ids)
+
+    def seed_known(self, rows):
+        """Pre-loads (measure_name, edition, measure_id) triples already
+        assigned outside this run -- e.g. by an earlier full build, when
+        this run only re-ingests a subset of editions/files (see
+        build_measures_db.py's --edition/--file). Populates BOTH _ids
+        and _used, not just _used: a measure spanning several files of
+        the same edition (the common case -- most measures touch more
+        than one agency) means get() can be called for the exact same
+        key this run even though only ONE of its several source files
+        is being reprocessed. Without the _ids entry too, that call
+        would recompute the hash fresh, find its own already-correct id
+        sitting in _used (seeded from the *other*, untouched file's
+        row), read that as "collision against a different key", and
+        salt-bump to a NEW id -- leaving the measure split across two
+        different ids depending on which row you look at (confirmed:
+        this exact split happened before _ids seeding was added here).
+        A straight cache hit for an already-known key avoids ever
+        reaching the hash/collision-check path for it at all."""
+        for measure_name, edition, measure_id in rows:
+            self._ids[(measure_name, edition)] = measure_id
+            self._used.add(measure_id)

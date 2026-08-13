@@ -263,12 +263,16 @@ PLACEHOLDER_MEASURE_NAME_RE = re.compile(r"^<(?:enter|insert) measure name here>
 # A measure-name row's trailing program reference (Education-style): a
 # single program number, a comma-separated list ("1.3,1.5"), or "All"
 # (outcome/measure-wide, no specific program). Home Affairs' own 2022-23
-# March Budget file uses "&" instead of "," as its separator ("2.2 & 3.3")
-# -- unrecognised, that measure's own name-plus-hint row fell through and
-# got misread as a category/agency line instead, corrupting every record
-# under it (the real measure name never got set, so the section header
-# above it -- itself a separate, still-unfixed case -- was used instead).
-PROGRAM_LIST_RE = re.compile(r"^(all|\d+(?:\.\d+)?(?:\s*[,&]\s*\d+(?:\.\d+)?)*)$", re.I)
+# March Budget file uses "&" instead of "," as its separator ("2.2 & 3.3"),
+# and Education's own 2022-23 October Budget file uses "; " ("1.1; 1.2",
+# e.g. "Plan for Cheaper Child Care") -- each unrecognised separator
+# means the whole cell fails PROGRAM_LIST_RE, so _parse_program_hint()
+# falls back to "not a program hint" and the row's program reference is
+# silently dropped entirely (confirmed: measure_impacts still got its $
+# figures fine via the normal sparse-totals path, but measure_programs
+# ended up with zero rows for that agency, even though the source file
+# states the programs right there on the measure's own row).
+PROGRAM_LIST_RE = re.compile(r"^(all|\d+(?:\.\d+)?(?:\s*[,&;]\s*\d+(?:\.\d+)?)*)$", re.I)
 
 
 def find_measures_year_columns(rows, max_scan=8):
@@ -366,7 +370,7 @@ def _parse_program_hint(cells):
         return None
     if text.lower() == "all":
         return []
-    return [p.strip() for p in re.split(r"[,&]", text)]
+    return [p.strip() for p in re.split(r"[,&;]", text)]
 
 
 def _format_program_num(v):
