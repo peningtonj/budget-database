@@ -70,7 +70,7 @@
                 has_financial_data: true,
               })}
           >
-            {isInTray(detail.measure_id) ? "✓ In comparison" : "+ Add to comparison"}
+            {isInTray(detail.measure_id) ? "✓ In summary" : "+ Add to summary"}
           </button>
         </div>
         <div class="badges">

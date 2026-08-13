@@ -501,6 +501,206 @@ def program_profile(request):
 
 
 @api_view(["GET"])
+def program_estimate_history(request):
+    """?program_name=<name> -> the raw material for a "how has the
+    Budget's own forecast for this program moved with each round"
+    chart: one "vintage" series per ingested edition (exactly what that
+    Budget round itself reported for this program -- its current year's
+    budget figure plus its own forward estimates for the following
+    years), alongside actual_series -- the realised estimated_actual
+    figure for every year one exists, the same authoritative figures
+    program_profile()'s own stitched series prefers.
+
+    Unlike program_profile(), nothing here is stitched/deduplicated
+    across editions -- every edition's own rows survive as their own
+    line, which is the whole point (seeing e.g. the 2022-23 October
+    Budget's forecast diverge from the 2022-23 March Budget's, or every
+    edition's forward estimates gradually converging toward the eventual
+    actual). program_name is used alone, unscoped by agency/portfolio,
+    for the same reason program_profile() is -- see its own docstring.
+    """
+    program_name = request.query_params.get("program_name")
+    if not program_name:
+        return Response(
+            {"detail": "program_name query param is required"}, status=400
+        )
+
+    rows = list(
+        ProgramExpense.objects.filter(program_name=program_name).values(
+            "edition",
+            "budget_year",
+            "fiscal_year",
+            "estimate_type",
+            "amount_thousands",
+            "outcome_number",
+            "outcome_description",
+        )
+    )
+    if not rows:
+        return Response({"detail": "not found"}, status=404)
+
+    # Summed first, same reasoning as _stitch_series's own first pass --
+    # a program spanning more than one agency within a single edition's
+    # filing gets combined into one figure per (edition, fiscal_year,
+    # estimate_type) before it becomes one point on that edition's line.
+    summed = defaultdict(int)
+    for r in rows:
+        key = (r["edition"], r["budget_year"], r["fiscal_year"], r["estimate_type"])
+        summed[key] += r["amount_thousands"]
+
+    by_edition = defaultdict(list)
+    budget_year_by_edition = {}
+    for (edition, budget_year, fy, etype), amt in summed.items():
+        budget_year_by_edition[edition] = budget_year
+        by_edition[edition].append(
+            {"fiscal_year": fy, "estimate_type": etype, "amount_thousands": amt}
+        )
+
+    vintages = [
+        {
+            "edition": edition,
+            "budget_year": budget_year_by_edition[edition],
+            "series": sorted(points, key=lambda p: p["fiscal_year"]),
+        }
+        for edition, points in by_edition.items()
+    ]
+    # (budget_year, edition) rather than budget_year alone -- two editions
+    # can share one budget_year (a mid-year update, e.g. "2022-23 March
+    # Budget" vs "2022-23 October Budget"), and need a stable, correctly
+    # chronological order between them; sorting the edition string second
+    # happens to already put "March" before "October" for every such pair
+    # ingested so far.
+    vintages.sort(key=lambda v: (v["budget_year"], v["edition"]))
+
+    actual_by_fy = {}
+    for (edition, budget_year, fy, etype), amt in summed.items():
+        if etype == "estimated_actual":
+            actual_by_fy[fy] = amt
+    actual_series = [
+        {"fiscal_year": fy, "amount_thousands": amt}
+        for fy, amt in sorted(actual_by_fy.items())
+    ]
+
+    meta = next(
+        (r for r in rows if r["edition"] == LATEST_BUDGET_EDITION), rows[-1]
+    )
+
+    return Response(
+        {
+            "program_name": program_name,
+            "outcome_number": meta["outcome_number"],
+            "outcome_description": meta["outcome_description"],
+            "vintages": vintages,
+            "actual_series": actual_series,
+        }
+    )
+
+
+@api_view(["GET"])
+def program_hierarchy(request):
+    """-> every (portfolio, agency, outcome, program) combination across
+    EVERY ingested edition's own program_expenses filing -- the full tree
+    for the Portfolio -> Agency -> Outcome -> Program picker
+    (CombinedMeasuresPage's "start from a program instead of a measure"
+    entry point). Returned flat, one row per program, rather than
+    pre-nested: ~2,800 rows across every year is still small enough that
+    the same client-side-cascading-filter pattern measure_list() already
+    uses (fetch once, filter as each picker level is chosen) is simpler
+    than four separate round trips per pick.
+
+    Deliberately NOT scoped to the latest edition alone (an earlier
+    version was, and only showed the current year's own agencies/
+    portfolios/programs -- a real gap: a portfolio/program since renamed
+    or restructured out of the current filing was simply invisible to
+    the picker, even though program_name -- what actually gets selected
+    -- is a stable, cross-year identity everywhere else in this file, so
+    there's no reason browsing should be limited to one year's snapshot).
+
+    Both portfolio and agency are cleaned up for display -- portfolio via
+    _canon_portfolio() (display only, same reasoning as measure_list()'s
+    own use of it -- this feeds a picker, never an exact-match join), and
+    agency via the exact same edition-scoped alias lookup _display_agency()
+    already does for measure agency badges elsewhere (some editions, e.g.
+    2022-23 October Budget, store the filename-derived short form
+    directly -- "OCT EDU" -- rather than a formal name). Bulk-resolved
+    here (one query for every AgencyAlias row, not one per program_expenses
+    row) since this endpoint can touch a few thousand rows in one call,
+    unlike _build_measure_detail's own per-measure use of the same lookup.
+
+    Cross-year agency-spelling drift for the same real agency (see
+    _agency_history's own docstring) is NOT bridged here -- the same
+    department can still appear more than once under different historical
+    spellings. Deliberately left as-is, consistent with this file's
+    existing stance (program_profile()'s own docstring) that cross-year
+    identity resolution is a different, harder problem than this picker
+    needs to solve: it only has to let a program be found and selected by
+    name, not present one canonical timeline per agency.
+    """
+    alias_lookup = {
+        (a["edition"], a["short_name"]): a["formal_name"]
+        for a in AgencyAlias.objects.values("edition", "short_name", "formal_name")
+    }
+
+    rows = ProgramExpense.objects.values(
+        "portfolio",
+        "agency",
+        "edition",
+        "outcome_number",
+        "outcome_description",
+        "program_number",
+        "program_name",
+    )
+
+    resolved = [
+        {
+            "portfolio": _canon_portfolio(r["portfolio"]),
+            "agency": alias_lookup.get((r["edition"], r["agency"]), r["agency"]),
+            "edition": r["edition"],
+            "outcome_number": r["outcome_number"],
+            "outcome_description": r["outcome_description"],
+            "program_number": r["program_number"],
+            "program_name": r["program_name"],
+        }
+        for r in rows
+    ]
+
+    # An outcome's own wording can change year to year without its
+    # number/identity actually changing (confirmed: Education's own
+    # Outcome 1 statement said "access to quality child care" in the
+    # 2022-23 October Budget, "access to quality early childhood
+    # education and care" every year since) -- picking one description
+    # per (portfolio, agency, outcome_number), preferring the latest
+    # edition's own wording, keeps a program from appearing twice under
+    # what's really the same outcome just because its blurb was reworded.
+    outcome_description = {}
+    for r in resolved:
+        key = (r["portfolio"], r["agency"], r["outcome_number"])
+        if key not in outcome_description or r["edition"] == LATEST_BUDGET_EDITION:
+            outcome_description[key] = r["outcome_description"]
+
+    seen = {}
+    for r in resolved:
+        key = (r["portfolio"], r["agency"], r["outcome_number"], r["program_number"], r["program_name"])
+        if key not in seen:
+            seen[key] = {
+                "portfolio": r["portfolio"],
+                "agency": r["agency"],
+                "outcome_number": r["outcome_number"],
+                "outcome_description": outcome_description[
+                    (r["portfolio"], r["agency"], r["outcome_number"])
+                ],
+                "program_number": r["program_number"],
+                "program_name": r["program_name"],
+            }
+
+    results = sorted(
+        seen.values(),
+        key=lambda r: (r["portfolio"], r["agency"], r["outcome_number"], r["program_number"]),
+    )
+    return Response(results)
+
+
+@api_view(["GET"])
 def portfolio_profile(request):
     """?portfolio=<name>&budget_year=<year> -> for every agency in that
     portfolio as of budget_year (a single-year snapshot -- which agencies
@@ -939,7 +1139,7 @@ def measure_combined(request):
         detail = _build_measure_detail(measure_name, edition)
         if detail is None:
             # BP2-only measure -- no measure_impacts/measure_programs row,
-            # so no $ data, but it still belongs in the comparison set's
+            # so no $ data, but it still belongs in the summary set's
             # own measures list (its write-up is still readable there).
             text = MeasureText.objects.filter(
                 measure_name=measure_name, edition=edition
@@ -968,6 +1168,125 @@ def measure_combined(request):
             )
 
     return Response({"measures": measures, "not_found": not_found})
+
+
+_program_reverse_index = None
+
+
+def _build_program_reverse_index():
+    """Maps every real program -- keyed by (program_name, portfolio), NOT
+    program_name alone -- to every measure that touches it across every
+    ingested edition. The reverse of what _build_measure_detail resolves
+    per-measure above, built once for the whole measure_programs table
+    (module-level singleton, same pattern as _get_topic_collection:
+    recomputing this per request would mean redoing the same agency-
+    history bridging + program_expenses lookups for ~12k rows on every
+    call to measures_by_program below).
+
+    portfolio is part of the key deliberately: program_hierarchy() above
+    already keeps genuinely different portfolio-era names distinct (e.g.
+    "Education and Training", 2017-19, vs "Education", 2023-26 -- a real
+    machinery-of-government rename, not a spelling variant), on purpose
+    -- program_name alone can legitimately be reused for what a user
+    wants to treat as a *different* selection (confirmed in practice: a
+    since-restructured department's own "Child Care Subsidy" filing and
+    the current department's own "Child Care Subsidy" filing share a
+    name but sit under different portfolios, and collapsing them into
+    one tray entry blocked adding both -- see measures_by_program's own
+    docstring for how the picker and this index now agree on that same
+    (program_name, portfolio) identity throughout).
+
+    Mirrors _build_measure_detail's own per-row resolution exactly
+    (agency bridged via _agency_history within that row's own portfolio,
+    matched against program_expenses for that row's own budget_year) --
+    just batched across every budget_year present in measure_programs
+    instead of scoped to one measure's own rows, since two different
+    measures touching the same program can come from completely
+    different editions.
+    """
+    global _program_reverse_index
+    if _program_reverse_index is not None:
+        return _program_reverse_index
+
+    rows_by_budget_year = defaultdict(list)
+    for p in MeasureProgram.objects.values(
+        "measure_name", "edition", "portfolio", "agency", "program_number"
+    ):
+        rows_by_budget_year[_budget_year(p["edition"])].append(p)
+
+    index = defaultdict(set)  # (program_name, portfolio) -> {(measure_name, edition)}
+    for budget_year, rows in rows_by_budget_year.items():
+        agency_name_sets = {}
+        for p in rows:
+            key = (p["agency"], p["portfolio"])
+            if key not in agency_name_sets:
+                agency_name_sets[key] = _agency_history(p["agency"], p["portfolio"])
+        all_candidate_names = set().union(*agency_name_sets.values()) if agency_name_sets else set()
+
+        program_lookup = {
+            (r["agency"], r["program_number"]): r["program_name"]
+            for r in ProgramExpense.objects.filter(
+                budget_year=budget_year, agency__in=all_candidate_names
+            ).values("agency", "program_number", "program_name")
+        }
+
+        for p in rows:
+            resolved_name = None
+            for candidate in agency_name_sets[(p["agency"], p["portfolio"])]:
+                resolved_name = program_lookup.get((candidate, p["program_number"]))
+                if resolved_name:
+                    break
+            if resolved_name:
+                index[(resolved_name, _canon_portfolio(p["portfolio"]))].add(
+                    (p["measure_name"], p["edition"])
+                )
+
+    _program_reverse_index = index
+    return _program_reverse_index
+
+
+@api_view(["GET"])
+def measures_by_program(request):
+    """?program_name=<name>&portfolio=<portfolio> -> every measure (across
+    every edition) whose own measure_programs rows resolve to that
+    (program_name, portfolio) pair, in the same per-measure shape
+    measure_combined() returns -- CombinedMeasuresPage's "start from a
+    program" entry point (the Portfolio/Agency/Outcome/Program picker,
+    see program_hierarchy() above) feeds both straight into this instead
+    of a list of measure ids.
+
+    portfolio is required, not optional: see _build_program_reverse_
+    index's own docstring for why the same program_name under two
+    different portfolio eras needs to resolve to two different measure
+    sets, not get silently merged.
+    """
+    program_name = request.query_params.get("program_name")
+    portfolio = request.query_params.get("portfolio")
+    if not program_name or not portfolio:
+        return Response(
+            {"detail": "program_name and portfolio query params are required"}, status=400
+        )
+
+    keys = _build_program_reverse_index().get((program_name, portfolio), set())
+
+    measures = []
+    for measure_name, edition in sorted(keys):
+        detail = _build_measure_detail(measure_name, edition)
+        if detail is None:
+            continue  # shouldn't happen -- these keys came from measure_programs itself
+        measures.append(
+            {
+                **detail,
+                "portfolios": [_canon_portfolio(p) for p in detail["portfolios"]],
+                # Always true -- unlike measure_combined's own ids-based
+                # lookup, every key here came from measure_programs
+                # itself (see _build_program_reverse_index), so there's
+                # no BP2-only/no-financial-data case to represent.
+                "has_financial_data": True,
+            }
+        )
+
+    return Response({"program_name": program_name, "portfolio": portfolio, "measures": measures})
 
 
 def _snippet(text, query, context=60):

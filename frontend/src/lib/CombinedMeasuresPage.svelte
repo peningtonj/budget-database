@@ -7,8 +7,8 @@
   import AgencyProgramChart from "./AgencyProgramChart.svelte";
   import CombinedProgramsTouched from "./CombinedProgramsTouched.svelte";
 
-  // ids: a snapshot of the tray's ids at the moment "Compare" was
-  // clicked (see SearchPage.svelte's own compare button/App.svelte's
+  // ids: a snapshot of the tray's ids at the moment "Summarise" was
+  // clicked (see SearchPage.svelte's own summarise button/App.svelte's
   // viewSet) -- fetched once here;
   // removing a measure below only filters the already-fetched response,
   // it doesn't change `ids` or trigger a re-fetch.
@@ -18,7 +18,7 @@
 
   // Deliberately a one-time snapshot, not live-bound to `ids` -- App.svelte
   // remounts this whole component (via {#key selectedSet}) on every new
-  // "Compare" click, so this only ever needs to capture its own initial
+  // "Summarise" click, so this only ever needs to capture its own initial
   // value once per mount.
   let currentIds = $state(untrack(() => [...ids]));
 
@@ -93,7 +93,7 @@
     )}
 
     <header>
-      <h1>Comparing {visible.length} measures</h1>
+      <h1>Summarising {visible.length} measures</h1>
       {#if editions.length > 1}
         <p class="section-note">Spanning editions: {editions.join(", ")}</p>
       {/if}
@@ -116,7 +116,7 @@
                 type="button"
                 class="remove"
                 onclick={() => removeMeasure(m.measure_id)}
-                aria-label={`Remove ${m.measure_name} from comparison`}
+                aria-label={`Remove ${m.measure_name} from summary`}
               >
                 ×
               </button>

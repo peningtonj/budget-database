@@ -1,11 +1,12 @@
 <script>
   import { fetchMeasureList, cachedMeasureList, fetchMeasureTextSearch, fetchMeasureTopicSearch } from "./api.js";
   import MultiSelectFilter from "./MultiSelectFilter.svelte";
+  import ProgramPicker from "./ProgramPicker.svelte";
   import { tray, isInTray, toggleInTray, addToTray, clearTray } from "./measureTray.svelte.js";
 
-  let { onselect, onViewSet } = $props();
+  let { onselect, onViewSet, onViewPrograms } = $props();
 
-  const MIN_TO_COMPARE = 2;
+  const MIN_TO_SUMMARISE = 2;
 
   // Stale-while-revalidate (see fetchMeasureList/cachedMeasureList's own
   // docstrings): a cached copy, if any, populates `measures` synchronously
@@ -35,7 +36,7 @@
       });
   });
 
-  /** @type {"name" | "text" | "topic"} */
+  /** @type {"name" | "text" | "topic" | "program"} */
   let mode = $state("name");
   // Shared across both modes -- switching modes keeps whatever's typed
   // and just changes how it's used, which reads as one continuous
@@ -197,16 +198,16 @@
       {#if tray.length > 0}
         <div class="tray-actions">
           <button type="button" class="clear-btn" onclick={clearTray}>
-            Clear comparisons
+            Clear summary
           </button>
           <button
             type="button"
-            class="compare-btn"
-            disabled={tray.length < MIN_TO_COMPARE}
-            title={tray.length < MIN_TO_COMPARE ? `Select at least ${MIN_TO_COMPARE} measures to compare` : ""}
+            class="summarise-btn"
+            disabled={tray.length < MIN_TO_SUMMARISE}
+            title={tray.length < MIN_TO_SUMMARISE ? `Select at least ${MIN_TO_SUMMARISE} measures to summarise` : ""}
             onclick={() => onViewSet(tray.map((m) => m.measure_id))}
           >
-            Compare {tray.length} selected measure{tray.length === 1 ? "" : "s"} →
+            Summarise {tray.length} selected measure{tray.length === 1 ? "" : "s"} →
           </button>
         </div>
       {/if}
@@ -223,8 +224,19 @@
     <button class:active={mode === "topic"} onclick={() => (mode = "topic")}>
       Topic
     </button>
+    <button class:active={mode === "program"} onclick={() => (mode = "program")}>
+      By program
+    </button>
   </div>
 
+  {#if mode === "program"}
+    <p class="section-note">
+      Start from a program instead of a measure -- pick Portfolio → Agency → Outcome →
+      Program, add as many as you like, and see every measure that's touched each one
+      summarised together.
+    </p>
+    <ProgramPicker onSummarise={onViewPrograms} />
+  {:else}
   <div class="controls">
     <input
       class="query"
@@ -299,7 +311,7 @@
           class="select-all"
           onclick={() => displayResults.slice(0, RESULT_CAP).forEach(addToTray)}
         >
-          Select all {Math.min(displayResults.length, RESULT_CAP)} for comparison
+          Select all {Math.min(displayResults.length, RESULT_CAP)} to summarise
         </button>
       {/if}
     </div>
@@ -315,7 +327,7 @@
               checked={isInTray(m.measure_id)}
               onclick={(e) => e.stopPropagation()}
               onchange={() => toggleInTray(m)}
-              aria-label={`Add ${m.measure_name} to comparison`}
+              aria-label={`Add ${m.measure_name} to summary`}
             />
             <button class="result" onclick={() => onselect(m.measure_id, m.measure_name, m.edition)}>
               <span class="name">{m.measure_name}</span>
@@ -342,6 +354,7 @@
         <p class="status">No measures match.</p>
       {/if}
     {/if}
+  {/if}
   {/if}
 </div>
 
@@ -386,7 +399,7 @@
     color: var(--text-h);
     border-color: var(--text-muted);
   }
-  .compare-btn {
+  .summarise-btn {
     flex-shrink: 0;
     font: inherit;
     font-size: 0.85rem;
@@ -399,7 +412,7 @@
     cursor: pointer;
     white-space: nowrap;
   }
-  .compare-btn:disabled {
+  .summarise-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }

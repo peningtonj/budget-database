@@ -83,7 +83,7 @@
                 has_financial_data: false,
               })}
           >
-            {isInTray(text.measure_id) ? "✓ In comparison" : "+ Add to comparison"}
+            {isInTray(text.measure_id) ? "✓ In summary" : "+ Add to summary"}
           </button>
         </p>
       {/if}
@@ -135,9 +135,9 @@
                       has_financial_data: true,
                     })}
                   aria-label={isInTray(r.measure_id)
-                    ? `Remove ${r.measure_name} from comparison`
-                    : `Add ${r.measure_name} to comparison`}
-                  title={isInTray(r.measure_id) ? "In comparison" : "Add to comparison"}
+                    ? `Remove ${r.measure_name} from summary`
+                    : `Add ${r.measure_name} to summary`}
+                  title={isInTray(r.measure_id) ? "In summary" : "Add to summary"}
                 >
                   {isInTray(r.measure_id) ? "✓" : "+"}
                 </button>

@@ -3,6 +3,8 @@
   import SearchPage from "./lib/SearchPage.svelte";
   import MeasurePage from "./lib/MeasurePage.svelte";
   import CombinedMeasuresPage from "./lib/CombinedMeasuresPage.svelte";
+  import ProgramMeasuresPage from "./lib/ProgramMeasuresPage.svelte";
+  import ProgramDeepDivePage from "./lib/ProgramDeepDivePage.svelte";
   import { resolveMeasureId } from "./lib/api.js";
 
   const DEFAULT_TITLE = document.title;
@@ -16,22 +18,37 @@
 
   /** @type {{name: string, edition: string} | null} */
   let selected = $state(null);
-  // A snapshot of ids being compared -- entered via SearchPage's own
-  // "Compare selected measures" button, never reflected in the URL.
-  // Unlike `selected`, this comparison set has no bookmarkable identity
+  // A snapshot of ids being summarised -- entered via SearchPage's own
+  // "Summarise selected measures" button, never reflected in the URL.
+  // Unlike `selected`, this summary set has no bookmarkable identity
   // of its own (it's an ad hoc set the user just built up, not a stable
   // thing worth sharing a link to) -- so it's plain in-memory state, the
   // same way MeasurePage's own drilldown toggle is, not address-bar state.
   let selectedSet = $state(null);
-  // The comparison set (ids) a measure was navigated away from, e.g. by
+  // The summary set (ids) a measure was navigated away from, e.g. by
   // clicking a card in CombinedMeasuresPage's own sidebar -- lets a
-  // "back to comparison" button return there without rebuilding the
+  // "back to summary" button return there without rebuilding the
   // selection, since the summary view itself has no URL of its own to
   // fall back to (see selectedSet's own note). Persists across further
   // measure-to-measure navigation (e.g. following a related-measure
   // badge), so the breadcrumb back to the summary you started from
   // isn't lost after one hop.
   let cameFromSet = $state(null);
+  // A snapshot of {program_name, portfolio} selections chosen via
+  // SearchPage's own "By program" mode (Portfolio -> Agency -> Outcome ->
+  // Program picker, see ProgramPicker.svelte) -- same in-memory-only,
+  // no-URL treatment as selectedSet above, for the same reason (an ad
+  // hoc set, not a stable thing worth a shareable link). portfolio
+  // travels with each selection, not just program_name alone -- see
+  // programTray.svelte.js's own docstring for why.
+  let selectedPrograms = $state(null);
+  // The single program_name being deep-dived into, opened from
+  // ProgramMeasuresPage's own chart legend -- same in-memory-only, no-URL
+  // treatment as the other summary views. Deliberately does NOT clear
+  // selectedPrograms when set: closing the deep dive should return to the
+  // program summary it was opened from, not the search page, so
+  // selectedPrograms is left alone as the "come back to" state.
+  let deepDiveProgram = $state(null);
   // True while resolving a ?m=<id> URL (on initial load or browser
   // back/forward) -- avoids flashing the search page before the id
   // actually resolves, since that's now an async round-trip rather than
@@ -52,12 +69,14 @@
     // to the search page rather than showing an error.
     selected = resolved ? { name: resolved.measure_name, edition: resolved.edition } : null;
     selectedSet = null;
+    selectedPrograms = null;
+    deepDiveProgram = null;
     resolving = false;
   }
 
   function selectMeasure(id, name, edition) {
-    // Leaving the comparison view for a single measure -- remember it so
-    // a "back to comparison" button can return without rebuilding the
+    // Leaving the summary view for a single measure -- remember it so
+    // a "back to summary" button can return without rebuilding the
     // selection. Already-set cameFromSet (mid-breadcrumb, e.g. hopping
     // between related measures) is left alone rather than cleared here.
     if (selectedSet) {
@@ -65,16 +84,36 @@
     }
     selected = { name, edition };
     selectedSet = null;
+    selectedPrograms = null;
+    deepDiveProgram = null;
     history.pushState({ id }, "", `?${new URLSearchParams({ m: id })}`);
   }
 
   function viewSet(ids) {
     selectedSet = ids;
     selected = null;
+    selectedPrograms = null;
+    deepDiveProgram = null;
     cameFromSet = null;
   }
 
-  function backToComparison() {
+  function viewPrograms(selections) {
+    selectedPrograms = selections;
+    selected = null;
+    selectedSet = null;
+    deepDiveProgram = null;
+    cameFromSet = null;
+  }
+
+  function viewProgramDeepDive(programName) {
+    deepDiveProgram = programName;
+  }
+
+  function closeDeepDive() {
+    deepDiveProgram = null;
+  }
+
+  function backToSummary() {
     selectedSet = cameFromSet;
     selected = null;
     history.pushState({}, "", window.location.pathname);
@@ -83,6 +122,8 @@
   function backToSearch() {
     selected = null;
     selectedSet = null;
+    selectedPrograms = null;
+    deepDiveProgram = null;
     cameFromSet = null;
     history.pushState({}, "", window.location.pathname);
   }
@@ -100,10 +141,15 @@
 
 {#if resolving}
   <p class="status">Loading…</p>
+{:else if deepDiveProgram}
+  <button class="back" onclick={closeDeepDive}>← Back{selectedPrograms ? " to summary" : ""}</button>
+  {#key deepDiveProgram}
+    <ProgramDeepDivePage programName={deepDiveProgram} />
+  {/key}
 {:else if selected}
   <div class="back-row">
     {#if cameFromSet}
-      <button class="back" onclick={backToComparison}>← Back to comparison</button>
+      <button class="back" onclick={backToSummary}>← Back to summary</button>
     {/if}
     <button class="back" onclick={backToSearch}>← Back to search</button>
   </div>
@@ -111,16 +157,28 @@
 {:else if selectedSet}
   <button class="back" onclick={backToSearch}>← Back to search</button>
   {#key selectedSet}
-    <!-- Remounts on every new "Compare" click (viewSet always assigns a
+    <!-- Remounts on every new "Summarise" click (viewSet always assigns a
          fresh array) so CombinedMeasuresPage's own currentIds/opened
          state -- captured once at mount, not live-bound to the ids prop
-         -- always starts fresh for the newly compared set, including
+         -- always starts fresh for the newly summarised set, including
          when the user is already on this page and adds more measures
-         before comparing again. -->
+         before summarising again. -->
     <CombinedMeasuresPage ids={selectedSet} onselect={selectMeasure} onBack={backToSearch} />
   {/key}
+{:else if selectedPrograms}
+  <button class="back" onclick={backToSearch}>← Back to search</button>
+  {#key selectedPrograms}
+    <!-- Remounts on every new "Summarise" click from ProgramPicker, same
+         reasoning as CombinedMeasuresPage's own {#key} above. -->
+    <ProgramMeasuresPage
+      programSelections={selectedPrograms}
+      onselect={selectMeasure}
+      onBack={backToSearch}
+      onDeepDive={viewProgramDeepDive}
+    />
+  {/key}
 {:else}
-  <SearchPage onselect={selectMeasure} onViewSet={viewSet} />
+  <SearchPage onselect={selectMeasure} onViewSet={viewSet} onViewPrograms={viewPrograms} />
 {/if}
 
 <style>

@@ -41,6 +41,25 @@ export async function fetchProgramProfile(programName) {
   return res.json();
 }
 
+// Every ingested Budget edition's own raw multi-year estimate for this
+// program (one "vintage" per edition, un-stitched -- see
+// program_estimate_history()'s own docstring), plus the realised
+// actual_series -- ProgramDeepDivePage's own chart data, showing how
+// the Budget's own forecast for this program has moved with each round.
+export async function fetchProgramEstimateHistory(programName) {
+  const url = new URL(`${API_BASE}/measures/program-estimate-history/`);
+  url.searchParams.set("program_name", programName);
+
+  const res = await fetch(url);
+  if (res.status === 404) {
+    throw new Error(`No estimate history found for "${programName}"`);
+  }
+  if (!res.ok) {
+    throw new Error(`Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 // '2024-25 MYEFO' / '2024-25 Budget' -> '2024-25' -- program_expenses only
 // has Budget editions, so a MYEFO measure's drilldown still needs the
 // underlying budget year to query against.
@@ -160,12 +179,46 @@ export async function resolveMeasureId(id) {
 
 // Batched per-measure detail (the same shape fetchMeasureDetail returns
 // for one measure) for several measures at once -- CombinedMeasuresPage's
-// one blocking fetch, so viewing a 10+ measure comparison set costs one
+// one blocking fetch, so viewing a 10+ measure summary set costs one
 // round trip instead of N. See measure_combined()'s own docstring for the
 // exact response shape, including `not_found` for any stale/typo'd id.
 export async function fetchMeasureCombined(ids) {
   const url = new URL(`${API_BASE}/measures/combined/`);
   url.searchParams.set("ids", ids.join(","));
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+// Every (portfolio, agency, outcome, program) row across EVERY ingested
+// edition's own program_expenses filing -- fetched once and filtered
+// client-side as each level of the Portfolio -> Agency -> Outcome -> Program
+// picker is chosen, the same stale-while-revalidate-free "just filter
+// the one payload" pattern measure_list() already uses (a couple thousand
+// rows, no need for four separate round trips per pick).
+export async function fetchProgramHierarchy() {
+  const res = await fetch(`${API_BASE}/measures/program-hierarchy/`);
+  if (!res.ok) {
+    throw new Error(`Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+// Every measure (any edition) whose own measure_programs rows resolve
+// to this (program_name, portfolio) pair -- ProgramMeasuresPage's own
+// per-program fetch, one call per selected program. portfolio is
+// required, not just program_name: the same program name can
+// legitimately mean two different things under two different
+// portfolio eras (a machinery-of-government rename), and each needs
+// its own measure set -- see measures_by_program()'s own docstring.
+// Same per-measure shape fetchMeasureCombined returns.
+export async function fetchMeasuresByProgram(programName, portfolio) {
+  const url = new URL(`${API_BASE}/measures/by-program/`);
+  url.searchParams.set("program_name", programName);
+  url.searchParams.set("portfolio", portfolio);
 
   const res = await fetch(url);
   if (!res.ok) {

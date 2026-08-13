@@ -1,11 +1,11 @@
-// A "comparison set" a user builds up across BOTH SearchPage (checking
+// A "summary set" a user builds up across BOTH SearchPage (checking
 // results, or "select all") and MeasurePage (adding the measure being
 // viewed, or one of its related-measures badges) -- so this lives as
 // shared module state (Svelte 5 runes work outside .svelte files in a
 // .svelte.js module), not local state owned by either page. Every
 // importer sees the same array and reacts to the same changes.
 //
-// sessionStorage-backed, not localStorage: a comparison set is a
+// sessionStorage-backed, not localStorage: a summary set is a
 // same-session, ad hoc thing to build up and use once -- not a
 // permanent bookmark (this page deliberately has no shareable URL of
 // its own, see CombinedMeasuresPage.svelte/App.svelte).
