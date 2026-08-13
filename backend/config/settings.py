@@ -74,6 +74,11 @@ MIDDLEWARE = [
     # browser does); must sit before CommonMiddleware since it needs to
     # see the final response body.
     "django.middleware.gzip.GZipMiddleware",
+    # No response under /api/ should ever be cached by the browser or an
+    # intermediate proxy -- every one reflects live, request-specific
+    # state (a search result, a $ figure). See its own docstring for the
+    # concrete case this guards against.
+    "measures.middleware.NoStoreApiMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
