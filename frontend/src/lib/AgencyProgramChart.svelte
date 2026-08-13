@@ -9,7 +9,12 @@
   // plain alphabetical-first agency (MeasurePage's existing behavior,
   // unchanged) when omitted or when it doesn't actually appear in this
   // measure's own agencies list.
-  let { programs, impacts, defaultAgency = null } = $props();
+  //
+  // onDeepDive: opens ProgramDeepDivePage for a program_name (see
+  // App.svelte's viewProgramDeepDive) -- optional so this component
+  // still renders standalone (e.g. in a future context with nowhere to
+  // navigate to) if ever omitted.
+  let { programs, impacts, defaultAgency = null, onDeepDive = null } = $props();
 
   // Program lines get a fixed categorical palette (assigned by index, never
   // cycled/reused for a different program); the measure's own line(s) use
@@ -286,7 +291,13 @@
         {#each c.programLines as line}
           <span class="legend-item">
             <span class="swatch" style="background: {line.color}"></span>
-            {line.program_name}
+            {#if onDeepDive}
+              <button type="button" class="legend-link" onclick={() => onDeepDive(line.program_name)}>
+                {line.program_name}
+              </button>
+            {:else}
+              {line.program_name}
+            {/if}
           </span>
         {/each}
         {#each c.measureLines as line}
@@ -397,6 +408,22 @@
   }
   .swatch.measure {
     border-radius: 1px;
+  }
+  .legend-link {
+    font: inherit;
+    font-size: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: transparent;
+    transition: text-decoration-color 0.15s;
+  }
+  .legend-link:hover {
+    color: var(--text-h);
+    text-decoration-color: var(--text-muted);
   }
   .measure-impact {
     width: 100%;

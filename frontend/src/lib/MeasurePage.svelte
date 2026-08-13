@@ -8,7 +8,7 @@
   import MeasureText from "./MeasureText.svelte";
   import { isInTray, toggleInTray } from "./measureTray.svelte.js";
 
-  let { name, edition, onselect } = $props();
+  let { name, edition, onselect, onDeepDive } = $props();
 
   // null means there's no measure_impacts/measure_programs row for this
   // (name, edition) -- true for 18 of the 21 ingested BP2 editions (see
@@ -148,7 +148,7 @@
               latest Budget for years still ahead. Solid squares mark the
               measure's own contribution.
             </p>
-            <AgencyProgramChart programs={detail.programs} impacts={detail.impacts} />
+            <AgencyProgramChart programs={detail.programs} impacts={detail.impacts} {onDeepDive} />
           </section>
         </div>
       </div>

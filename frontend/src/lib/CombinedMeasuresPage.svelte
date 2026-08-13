@@ -12,7 +12,7 @@
   // viewSet) -- fetched once here;
   // removing a measure below only filters the already-fetched response,
   // it doesn't change `ids` or trigger a re-fetch.
-  let { ids, onselect, onBack } = $props();
+  let { ids, onselect, onBack, onDeepDive } = $props();
 
   let combinedPromise = $derived(fetchMeasureCombined(ids));
 
@@ -178,7 +178,7 @@
             selected measures. Estimated actuals for past years, budget/forward estimates from
             the latest Budget for years still ahead.
           </p>
-          <AgencyProgramChart programs={mergedPrograms} impacts={allImpacts} defaultAgency={agency} />
+          <AgencyProgramChart programs={mergedPrograms} impacts={allImpacts} defaultAgency={agency} {onDeepDive} />
         </section>
 
         <section>
