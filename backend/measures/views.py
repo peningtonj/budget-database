@@ -995,6 +995,7 @@ CHROMA_PATH = Path(__file__).resolve().parent.parent.parent / "chroma_measures"
 CHROMA_COLLECTION_NAME = "measure_text"
 
 _topic_collection = None
+_query_embedder = None
 
 
 def _get_topic_collection():
@@ -1026,6 +1027,38 @@ def _get_topic_collection():
         return None
     _topic_collection = collection
     return _topic_collection
+
+
+def _get_query_embedder():
+    """A second, separately-cached singleton for embedding the QUERY
+    text at search time -- confirmed in production this is not
+    redundant with _get_topic_collection's own caching above.
+    chromadb's DefaultEmbeddingFunction.__call__ does
+    `return ONNXMiniLM_L6_V2()(input)`: a brand-new ONNXMiniLM_L6_V2
+    instance, discarded right after, on every single call. That class's
+    own onnxruntime InferenceSession and tokenizer are @cached_property
+    -- built once and reused -- but that only pays off across calls on
+    the SAME instance, which chromadb's own wrapper never gives it.
+    Net effect: every topic search rebuilt the whole ONNX inference
+    session from scratch, on Render's own limited free-tier CPU slow
+    enough to occasionally exceed gunicorn's worker timeout and get
+    killed mid-request (a SystemExit from gunicorn's own handle_abort,
+    seen in production logs, raised from inside this exact __call__).
+
+    Building our own instance once here and reusing it for every query
+    (via query_embeddings= below, which skips the collection's own
+    embedding function entirely -- it's only invoked when you pass raw
+    query_texts instead) fixes that: the expensive session/tokenizer
+    build happens once per server process, same as the collection load
+    above, not once per request.
+    """
+    global _query_embedder
+    if _query_embedder is not None:
+        return _query_embedder
+    from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
+
+    _query_embedder = ONNXMiniLM_L6_V2()
+    return _query_embedder
 
 
 @api_view(["GET"])
@@ -1061,7 +1094,12 @@ def measure_topic_search(request):
         )
 
     n_results = min(int(request.query_params.get("n", 30)), 100)
-    result = collection.query(query_texts=[q], n_results=n_results)
+    # query_embeddings=, not query_texts= -- computing the embedding
+    # ourselves via the cached singleton above means the collection's
+    # own (expensive-per-call, see _get_query_embedder's own docstring)
+    # embedding function is never invoked at all.
+    query_embedding = _get_query_embedder()([q])[0]
+    result = collection.query(query_embeddings=[query_embedding], n_results=n_results)
     ids = result["ids"][0]
     metadatas = result["metadatas"][0]
     distances = result["distances"][0]
