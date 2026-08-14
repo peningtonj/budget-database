@@ -4,7 +4,7 @@ Build the BP2 measure-text tables in programs.db from Budget Paper No. 2
 ups parse_bp2.py extracts, as opposed to the per-agency PBS/PAES Table
 1.2 spreadsheets parse_measures.py/build_measures_db.py handle.
 
-Scope: every 2014-15-through-2025-26 Budget and MYEFO document (see
+Scope: every 2014-15-through-2026-27 Budget and MYEFO document (see
 EDITIONS below) except 2014-15 Budget. Pre-2020-21 editions use an
 older three-part "Part 1: Revenue Measures" / "Part 2: Expense
 Measures" / "Part 3: Capital Measures" structure (vs. the current
@@ -74,6 +74,7 @@ EDITIONS = [
     (os.path.join(ROOT, "data/papers/Budget/2023-24 Budget.pdf"), "2023-24 Budget"),
     (os.path.join(ROOT, "data/papers/Budget/2024-25 Budget.pdf"), "2024-25 Budget"),
     (os.path.join(ROOT, "data/papers/Budget/2025-26 Budget.pdf"), "2025-26 Budget"),
+    (os.path.join(ROOT, "data/papers/Budget/2026-27 Budget.pdf"), "2026-27 Budget"),
     (os.path.join(ROOT, "data/papers/MYEFO/2014-15 MYEFO.pdf"), "2014-15 MYEFO"),
     (os.path.join(ROOT, "data/papers/MYEFO/2015-16 MYEFO.pdf"), "2015-16 MYEFO"),
     (os.path.join(ROOT, "data/papers/MYEFO/2016-17 MYEFO.pdf"), "2016-17 MYEFO"),

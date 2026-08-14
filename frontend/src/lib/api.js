@@ -99,7 +99,7 @@ export async function fetchAgencyOutcomeProfile(agency, portfolio, editionOrBudg
   return res.json();
 }
 
-// Only ingested for 2020-21 through 2025-26 so far (see build_bp2_db.py
+// Only ingested for 2020-21 through 2026-27 so far (see build_bp2_db.py
 // / KNOWN_GAPS.md), so a (measure, edition) pair can genuinely have no
 // write-up -- that's not an error state, so a 404 resolves to null
 // rather than throwing.

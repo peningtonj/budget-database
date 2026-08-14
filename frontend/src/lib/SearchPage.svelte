@@ -189,7 +189,7 @@
       <div>
         <h1>Measures</h1>
         <p class="section-note">
-          Covers every ingested Budget/MYEFO edition, 2015-16 through 2025-26.
+          Covers every ingested Budget/MYEFO edition, 2015-16 through 2026-27.
           Most editions have full per-agency $ impact/program data ("financial
           data" below); a few older/partial ones show the Budget Paper No. 2
           write-up alone (see KNOWN_GAPS.md).

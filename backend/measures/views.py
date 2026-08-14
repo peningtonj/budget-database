@@ -24,7 +24,7 @@ BUDGET_YEAR_RE = re.compile(r"(\d{4}-\d{2})")
 # rows are the government's most up to date prediction for years not yet
 # covered by an estimated_actual. Update this each time a newer Budget is
 # ingested into program_expenses.
-LATEST_BUDGET_EDITION = "2025-26 Budget"
+LATEST_BUDGET_EDITION = "2026-27 Budget"
 
 # Some editions' PBS directory layout embeds the edition + document type
 # directly in the folder name used as measure_impacts/measure_programs'

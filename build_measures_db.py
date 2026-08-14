@@ -1,7 +1,7 @@
 """
 Build the Measures tables in programs.db from Table 1.2 (Budget and MYEFO).
 
-Scope: all 19 Budget/MYEFO editions from 2017-18 through 2025-26 (both the
+Scope: all 20 Budget/MYEFO editions from 2017-18 through 2026-27 (both the
 March and October 2022-23 Budgets). Ingestion started on a 3-edition
 validation set (2025-26 Budget, 2024-25 Budget, 2024-25 MYEFO); expanded to
 the full set once parse_measures.py's remaining structural gaps across the
@@ -77,6 +77,7 @@ EDITIONS = [
     (os.path.join(ROOT, "data/pbs/Budget/2023-24 Budget"), "2023-24 Budget"),
     (os.path.join(ROOT, "data/pbs/Budget/2024-25 Budget"), "2024-25 Budget"),
     (os.path.join(ROOT, "data/pbs/Budget/2025-26 Budget"), "2025-26 Budget"),
+    (os.path.join(ROOT, "data/pbs/Budget/2026-27 Budget"), "2026-27 Budget"),
     (os.path.join(ROOT, "data/pbs/MYEFO/2017-18 MYEFO"), "2017-18 MYEFO"),
     (os.path.join(ROOT, "data/pbs/MYEFO/2018-19 MYEFO"), "2018-19 MYEFO"),
     (os.path.join(ROOT, "data/pbs/MYEFO/2019-20 MYEFO"), "2019-20 MYEFO"),
