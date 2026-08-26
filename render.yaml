@@ -26,7 +26,13 @@ services:
       curl -fL "$DATA_RELEASE_URL_BASE/chroma_measures.tar.gz" | tar xz &&
       python -c "from chromadb.utils import embedding_functions; embedding_functions.DefaultEmbeddingFunction()" &&
       cd backend && python manage.py collectstatic --noinput
-    startCommand: gunicorn --chdir backend config.wsgi:application --bind 0.0.0.0:$PORT
+    # See the Dockerfile's own comment on this same command for why --
+    # bare gunicorn defaults to 1 sync worker with a 30s timeout, so one
+    # slow request (a cold ONNX model load, program_hierarchy's own
+    # ~20k-row query under Render free-tier CPU throttling) blocks every
+    # other request behind it and can outright fail once gunicorn's
+    # timeout (or Render's own edge timeout) kills it mid-request.
+    startCommand: gunicorn --chdir backend config.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --threads 4 --worker-class gthread --timeout 120
     envVars:
       - key: DJANGO_SECRET_KEY
         generateValue: true
