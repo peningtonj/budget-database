@@ -22,7 +22,13 @@ RUN curl -fL -o programs.db "$DATA_RELEASE_URL_BASE/programs.db" \
     && curl -fL "$DATA_RELEASE_URL_BASE/chroma_measures.tar.gz" | tar xz \
     && python -c "from chromadb.utils import embedding_functions; embedding_functions.DefaultEmbeddingFunction()"
 
-COPY backend/ backend/
+# backend/measures/views.py puts the repo root on sys.path (see its own
+# comment) so it can import shared modules that live there alongside it
+# rather than inside backend/ — portfolio_aliases.py today, plausibly
+# others later. Copy the whole repo (see .dockerignore for what's excluded:
+# .git, frontend/, and the data-bundle files fetched separately above),
+# not just backend/, so none of those imports go missing on the next one.
+COPY . .
 RUN cd backend && python manage.py collectstatic --noinput
 
 RUN useradd -m appuser && chown -R appuser:appuser /app

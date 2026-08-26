@@ -1,0 +1,10 @@
+.git
+frontend
+data
+programs.db
+chroma_measures
+chroma_measures.tar.gz
+__pycache__
+*.pyc
+.venv
+venv
