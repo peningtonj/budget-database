@@ -13,8 +13,12 @@ import re
 import glob
 import sqlite3
 import traceback
+from collections import defaultdict
 
 from parse_pbs import parse_workbook, norm
+from patches import apply_patches
+from patches.agency_name_overrides import OVERRIDES as AGENCY_NAME_OVERRIDES
+from portfolio_aliases import canon_portfolio
 
 ROOT = "/Users/josephpenington/budget/budget-database"
 BUDGET_DIR = os.path.join(ROOT, "data/pbs/Budget")
@@ -22,20 +26,69 @@ DB_PATH = os.path.join(ROOT, "programs.db")
 
 AGENCY_STRIP = re.compile(
     r"""(?ix)
-      \d{4}[-–]\d{2}                       # 2025-26
+      \d{4}\s*[-–]\s*\d{2}                 # 2025-26 (whitespace-tolerant: at least
+                                           # one filename has "2026 -27" with a stray
+                                           # space, otherwise left as "2026 27 AHL")
     | \b(pb|pbs)\b
     | portfolio\s+budget\s+statements?
-    | pb\s+statement
+    | pb\s+statements?
     | excel\s+tables?
     | \btables?\b
-    | \bcleaned?\b
-    | \bstatement\b
+    | \bbudget\b(?!\s+office)              # Generic boilerplate in most filenames
+                                           # ("Budget 2020-21 AIFS PBS Tables.xlsx",
+                                           # "2021-22 Budget ANSTO.xlsx") -- but for a
+                                           # handful of real agencies "Budget" is part
+                                           # of the actual name ("Parliamentary Budget
+                                           # Office", "Portfolio Budget Office"), so
+                                           # left alone whenever "Office" follows it.
+    | \bclean(?:ed)?\b                    # "clean(ed?)?": ?\b previously only made
+                                           # the trailing "d" optional, requiring the
+                                           # "e" of "ed" to always be present -- so it
+                                           # matched "cleaned" but silently missed the
+                                           # far more common bare "clean" (366 of 1506
+                                           # source filenames), leaving e.g. "ACARA
+                                           # clean" as agency instead of "ACARA".
+    | \boct\b                             # 2022-23 October Budget's own filename
+                                           # convention prefixes every file with "OCT"
+                                           # (e.g. "2022-23 OCT PBS ... - ACARA.xlsx"),
+                                           # otherwise left dangling as "OCT ACARA".
+    | \boctober\b                         # Same edition, some portfolios (Finance,
+                                           # Treasury) spell it out in full instead --
+                                           # "October 2022-23 PBS - AEC.xlsx" -- left
+                                           # dangling as "October AEC" otherwise.
+    | \bstatements?\b
+    | \bsatements?\b                      # Every 2025-26 Budget filename in this
+                                           # batch misspells "Statement" as "Satement"
+                                           # (5 files: AFP, NTC, SBS, Screen Australia,
+                                           # OPH) -- tolerated alongside the correct
+                                           # spelling rather than left dangling as
+                                           # "Satement AFP".
     | \bpaes\b                            # MYEFO filenames: "<Agency> PAES 2024-25.xlsx"
     """)
+# Health and Aged Care's own files for the 2022-23 October Budget are named
+# as an internal routing note to Finance -- "For Finance - NHMRC 2022-23
+# October PBS.xlsx" -- rather than just the agency, unlike every other
+# portfolio/edition. Only strips that exact leading phrase (not the bare
+# words "for"/"finance", which are legitimate agency-name content
+# elsewhere, e.g. "Department of Finance" itself), so it's kept as its own
+# prefix-anchored pattern rather than folded into AGENCY_STRIP's word list.
+AGENCY_ROUTING_NOTE_RE = re.compile(r"^for\s+finance\s*[-–]\s*", re.I)
 
 
 def clean_agency(filename):
+    override = AGENCY_NAME_OVERRIDES.get(os.path.basename(filename))
+    if override is not None:
+        return override
     stem = os.path.splitext(os.path.basename(filename))[0]
+    stem = AGENCY_ROUTING_NOTE_RE.sub("", stem)
+    # Underscore counts as a \w character, so it satisfies regex \b word
+    # boundaries the same as a letter does -- meaning AGENCY_STRIP's \b-
+    # anchored patterns (PBS, clean, OCT, tables...) silently fail to match
+    # inside an underscore-joined filename like "Communications_PBS_10_NMA"
+    # unless underscores become real word breaks *before* AGENCY_STRIP runs.
+    # (Dashes are left for the pass below -- AGENCY_STRIP's own year-range
+    # pattern, \d{4}[-–]\d{2}, depends on that dash still being present.)
+    stem = stem.replace("_", " ")
     stem = AGENCY_STRIP.sub(" ", stem)
     stem = re.sub(r"[\-–_]+", " ", stem)
     stem = re.sub(r"\s+", " ", stem).strip(" -–")
@@ -107,6 +160,71 @@ def create_schema(con):
         con.execute(f"CREATE INDEX idx_pe_{col} ON program_expenses({col});")
 
 
+def normalize_program_name_casing(con):
+    """Rewrites program_name wherever two editions report what's clearly
+    the same program with different capitalization only (confirmed: ~28
+    pairs, e.g. "Delivery of Specialist Education" vs "...specialist
+    education") -- the source workbook's own header casing drifting
+    between editions, not a real change in identity. Every older edition's
+    casing is rewritten to match whichever casing the *latest* edition
+    (by budget_year, then edition string -- which already orders "2022-23
+    March Budget" before "...October Budget" correctly) used for that
+    program, so a program stops fragmenting purely on capitalization.
+
+    Scoped by canonical portfolio (canon_portfolio, from the shared
+    portfolio_aliases module also used by backend/measures/views.py), not
+    just the case-folded name alone: checked directly against the data,
+    20 of the 28 raw case-only pairs turned out to span genuinely
+    different real portfolios once canonicalized -- a generic-sounding
+    name ("Regional Development", "Local Government", "Secret
+    Intelligence"...) reused by a different portfolio era or an unrelated
+    department, not the same program. Folding those into one shared name
+    purely because the text happens to match case-insensitively would
+    misrepresent them as the same program everywhere identity is grouped
+    by name (e.g. program_outcome_audit's own view). Only the 8 pairs that
+    share one real canonical portfolio are safe to recase.
+
+    Deliberately a separate, cross-edition pass over the fully-populated
+    table rather than something clean_program_name() (parse_pbs.py) could
+    ever do: that function only ever sees one workbook's own text at a
+    time, with no way to know what casing some *other* edition used for
+    the same program, let alone what portfolio era it belongs to. Run once
+    after every file's own rows are already inserted.
+    """
+    rows = con.execute(
+        "select distinct edition, budget_year, portfolio, program_name "
+        "from program_expenses where program_name is not null"
+    ).fetchall()
+
+    groups = defaultdict(set)   # (canon_portfolio, fold_key) -> {(name, portfolio)}
+    latest = {}                 # same key -> (sort_key, name)
+    for edition, by, portfolio, name in rows:
+        fold_key = re.sub(r"\s+", " ", name.strip().lower())
+        group_key = (canon_portfolio(portfolio), fold_key)
+        groups[group_key].add((name, portfolio))
+        sort_key = (by, edition)
+        if group_key not in latest or sort_key > latest[group_key][0]:
+            latest[group_key] = (sort_key, name)
+
+    renamed = 0
+    for group_key, name_portfolio_pairs in groups.items():
+        names = {n for n, _ in name_portfolio_pairs}
+        if len(names) <= 1:
+            continue
+        canonical = latest[group_key][1]
+        for name, portfolio in name_portfolio_pairs:
+            if name == canonical:
+                continue
+            con.execute(
+                "update program_expenses set program_name = ? "
+                "where program_name = ? and portfolio = ?",
+                (canonical, name, portfolio),
+            )
+            renamed += 1
+    con.commit()
+    return renamed
+
+
 def main():
     con = sqlite3.connect(DB_PATH)
     create_schema(con)
@@ -128,6 +246,7 @@ def main():
         if not recs:
             empty.append(rel)
             continue
+        recs = apply_patches(rel, recs)
         # Occasionally a source workbook mislabels a line (e.g. reuses a
         # program name inside a different program's block), producing two
         # conflicting amounts for the same key. Keep the first (top-to-
@@ -156,11 +275,14 @@ def main():
             inserted += 1
     con.commit()
 
+    renamed = normalize_program_name_casing(con)
+
     print(f"Files scanned      : {file_count}")
     print(f"Rows inserted      : {inserted}")
     print(f"Files w/ 0 records : {len(empty)}")
     print(f"Files w/ errors    : {len(errors)}")
     print(f"Conflicting dups   : {len(conflicts)}")
+    print(f"Program names recased : {renamed}")
     if conflicts:
         print("\n--- CONFLICTING DUPLICATES (kept first, dropped rest) ---")
         for rel, key, kept, dropped in conflicts:

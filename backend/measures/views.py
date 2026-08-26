@@ -1,5 +1,6 @@
 import re
-from collections import defaultdict
+import sys
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from django.db.models import Q
@@ -17,6 +18,22 @@ from .models import (
     ProgramExpense,
 )
 from .serializers import MeasureImpactSerializer
+from .related_programs import find_related
+
+# Portfolio canonicalization (PORTFOLIO_ALIASES, canon_portfolio) lives in
+# the repo-root portfolio_aliases module, not here -- build_db.py (a
+# standalone script with no Django dependency) needs the exact same
+# lookup for normalize_program_name_casing(), and this module's own
+# Django-only imports rule out the reverse direction. The repo root isn't
+# on sys.path by default under Django (only this app's own package is),
+# so it's added explicitly -- backend/measures/views.py -> backend/
+# measures -> backend -> repo root is parents[2].
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from portfolio_aliases import (
+    PORTFOLIO_ALIASES as _PORTFOLIO_ALIASES,
+    canon_portfolio as _canon_portfolio,
+    strip_portfolio_prefix as _strip_portfolio_prefix,
+)
 
 BUDGET_YEAR_RE = re.compile(r"(\d{4}-\d{2})")
 
@@ -26,144 +43,43 @@ BUDGET_YEAR_RE = re.compile(r"(\d{4}-\d{2})")
 # ingested into program_expenses.
 LATEST_BUDGET_EDITION = "2026-27 Budget"
 
-# Some editions' PBS directory layout embeds the edition + document type
-# directly in the folder name used as measure_impacts/measure_programs'
-# own `portfolio` ("2020-21 PAES AGs", "2021-22 PBS PM&C1") instead of a
-# clean portfolio label -- confirmed via a direct directory listing that
-# other editions (e.g. 2024-25 Budget) use a bare short code ("AG",
-# "DAFF") with no such prefix, so this is a genuine per-edition source
-# inconsistency, not a uniform convention to rely on. Stripped here at
-# the API layer rather than upstream in build_measures_db.py, the same
-# choice already made for agency naming (see agency_aliases /
-# _resolve_agencies below, and KNOWN_GAPS.md #4/#6) -- the raw stored
-# value stays as-is (still a real, if messy, historical record of what
-# the source file was actually organised as), only what the API
-# surfaces gets cleaned up.
-_PORTFOLIO_YEAR_PREFIX_RE = re.compile(r"^\d{4}-\d{2}\s+(?:PAES|PBS|MYEFO)\s+", re.I)
+# 2022-23 October Budget is the one edition whose own estimated_actual is
+# never used -- not preferred over another edition's for the same fiscal
+# year, and not even used as a last-resort fallback when no other edition
+# covers that year for a given program (confirmed superseded once normal
+# annual reporting resumed with the 2023-24 Budget; if a program's own
+# portfolio/outcome happened to change right at that boundary, a genuine
+# blank for that year is more honest than borrowing a since-superseded
+# figure). Shared by _stitch_series and program_estimate_history's own
+# actual_series below -- keep both in sync with this, not a local copy.
+EXCLUDED_ACTUAL_EDITIONS = {"2022-23 October Budget"}
 
 
-def _strip_portfolio_prefix(raw):
-    s = _PORTFOLIO_YEAR_PREFIX_RE.sub("", raw.strip())
-    # A stray trailing digit ("PM&C1", a one-off file-naming collision
-    # artifact) -- never a real part of any portfolio name.
-    s = re.sub(r"(?<=[A-Za-z])\d+$", "", s)
-    return re.sub(r"\s+", " ", s).strip()
+_PORTFOLIO_VARIANTS = {}
+for _raw, _canon in _PORTFOLIO_ALIASES.items():
+    _PORTFOLIO_VARIANTS.setdefault(_canon, {_canon}).add(_raw)
 
 
-# Every raw portfolio string observed across measure_text/measure_impacts/
-# measure_programs (170 distinct as of this pass -- see KNOWN_GAPS.md's
-# own portfolio-normalization section for the full survey) that is a
-# case/punctuation/typo/abbreviation variant of another, built by direct
-# inspection of that full list -- not a fuzzy/guessed merge. Genuinely
-# different portfolio names from different eras/machinery-of-government
-# changes (e.g. "Agriculture" vs "Agriculture, Water and the Environment"
-# vs "Agriculture, Fisheries and Forestry"; "Health" vs "Health and Aged
-# Care") are deliberately kept distinct, not merged -- they really were
-# called different things in different years, and collapsing them would
-# misrepresent history the same way cross-year agency-identity bridging
-# is deliberately NOT attempted beyond the one case documented in
-# KNOWN_GAPS.md #6. A handful of ambiguous cases (bare "Communications",
-# "Industry", "Foreign Affairs") were left unmapped for the same reason:
-# not confident enough they're the same era as their longer-named
-# siblings to merge safely. Keys are matched case-sensitively (no
-# case-folding) against the already prefix-stripped string -- exhaustive
-# rather than heuristic, matching how _canon_measure_name/_canon_for_
-# lookup elsewhere in this codebase only ever normalize specific,
-# individually-verified unicode variants, never fold case wholesale.
-_PORTFOLIO_ALIASES = {
-    # Attorney-General's
-    "AG": "Attorney-General's",
-    "AGs": "Attorney-General's",
-    "ATTORNEY-GENERAL'S": "Attorney-General's",
-    "ATTORNEY-GENERAL’S": "Attorney-General's",
-    "Attorney General": "Attorney-General's",
-    "Attorney General's": "Attorney-General's",
-    "Attorney-Generals": "Attorney-General's",
-    "Attorney-General’s": "Attorney-General's",
-    "Attorney‑General’s": "Attorney-General's",
-    # Agriculture
-    "AGRICULTURE": "Agriculture",
-    "AGRICULTURE AND WATER RESOURCES": "Agriculture and Water Resources",
-    "Agriculture Water and the Environment": "Agriculture, Water and the Environment",
-    "AWE": "Agriculture, Water and the Environment",
-    "DAFF": "Agriculture, Fisheries and Forestry",
-    # Climate change / energy / environment / water
-    "CCEEW": "Climate Change, Energy, the Environment and Water",
-    "DCCEEW": "Climate Change, Energy, the Environment and Water",
-    "ENVIRONMENT": "Environment",
-    "ENVIRONMENT AND ENERGY": "Environment and Energy",
-    # Communications
-    "COMMUNICATIONS": "Communications",
-    "COMMUNICATIONS AND THE ARTS": "Communications and the Arts",
-    "CROSS PORTFOLIO": "Cross Portfolio",
-    # Defence / Veterans' Affairs
-    "DEFENCE": "Defence",
-    "DVA": "Veterans' Affairs",
-    "VETERANS' AFFAIRS": "Veterans' Affairs",
-    "VETERANS’ AFFAIRS": "Veterans' Affairs",
-    "Veteran's Affairs": "Veterans' Affairs",
-    "Veterans": "Veterans' Affairs",
-    "Veterans Affairs": "Veterans' Affairs",
-    "Veterans’ Affairs": "Veterans' Affairs",
-    # Education / Employment
-    "DESE": "Education, Skills and Employment",
-    "EDUCATION": "Education",
-    "EDUCATION AND TRAINING": "Education and Training",
-    "Education Skills and Employment": "Education, Skills and Employment",
-    "EMPLOYMENT": "Employment",
-    "DEWR": "Employment and Workplace Relations",
-    # Finance / Treasury
-    "FINANCE": "Finance",
-    "TREASURY": "Treasury",
-    # Foreign Affairs and Trade
-    "DFAT": "Foreign Affairs and Trade",
-    "FOREIGN AFFAIRS AND TRADE": "Foreign Affairs and Trade",
-    "Foreign Affairs & Trade": "Foreign Affairs and Trade",
-    "Foreign Affiars and Trade": "Foreign Affairs and Trade",
-    "Foriegn Affairs & Trade": "Foreign Affairs and Trade",
-    # Health
-    "HEALTH": "Health",
-    # Home Affairs / Immigration
-    "HOME AFFAIRS": "Home Affairs",
-    "IMMIGRATION AND BORDER PROTECTION": "Immigration and Border Protection",
-    # Human Services
-    "HUMAN SERVICES": "Human Services",
-    "Human Services (part of the Social Services Portfolio)": "Human Services",
-    # Industry / Infrastructure
-    "INDUSTRY": "Industry",
-    "DISER": "Industry, Science, Energy and Resources",
-    "INDUSTRY, INNOVATION AND SCIENCE": "Industry, Innovation and Science",
-    "INFRASTRUCTURE AND REGIONAL DEVELOPMENT": "Infrastructure and Regional Development",
-    "INFRASTRUCTURE, REGIONAL DEVELOPMENT AND CITIES": "Infrastructure, Regional Development and Cities",
-    "Infrastructure adn Regional Development": "Infrastructure and Regional Development",
-    # Jobs
-    "JOBS AND INNOVATION": "Jobs and Innovation",
-    "Jobs and Innovation Portfolio (Department of Industry, Innovation and Science)": "Jobs and Innovation",
-    "JOBS AND SMALL BUSINESS": "Jobs and Small Business",
-    "Jobs and Innovation Portfolio (Department of Jobs and Small Business)": "Jobs and Small Business",
-    # Prime Minister and Cabinet
-    "PM&C": "Prime Minister and Cabinet",
-    "Prime Minister & Cabinet": "Prime Minister and Cabinet",
-    "PRIME MINISTER AND CABINET": "Prime Minister and Cabinet",
-    # Parliament
-    "PARL": "Parliament",
-    "PARLIAMENT": "Parliament",
-    "Parliamentary Departments - Department of Parliamentary Services": "Parliamentary Departments",
-    # Social Services
-    "SOCIAL SERVICES": "Social Services",
-    "Social Services (Human Services)": "Social Services",
-}
+def _portfolio_history(portfolio):
+    """Every raw program_expenses.portfolio spelling that canonicalizes to
+    the same real portfolio as `portfolio` -- e.g. given "Foreign Affairs
+    and Trade", also returns "DFAT", "Foreign Affairs", "Foreign Affairs &
+    Trade", "Foriegn Affairs & Trade". Same idea as _agency_history() above,
+    but portfolio canonicalization is a static, hand-built dict rather than
+    a per-file derived alias table, so no DB lookup is needed -- just the
+    reverse of _PORTFOLIO_ALIASES itself.
 
-
-def _canon_portfolio(raw):
-    """Cleans up a raw portfolio string for display/filtering -- see
-    _PORTFOLIO_ALIASES' own docstring for what is and isn't merged.
-    Falsy input passes through unchanged (some rows have "", handled by
-    the caller, same as before this function existed)."""
-    if not raw:
-        return raw
-    stripped = _strip_portfolio_prefix(raw)
-    return _PORTFOLIO_ALIASES.get(stripped, stripped)
+    Needed because program_expenses.portfolio is stored as each edition's
+    own raw folder-derived string, never canonicalized at ingest time
+    (unlike agency, which is at least consistent within one edition/file).
+    Without this, program_profile()/program_estimate_history()'s own
+    portfolio filter -- an exact match against that raw column -- would
+    silently drop every edition whose folder happened to spell the same
+    real portfolio differently, since the picker that feeds them
+    (program_hierarchy()) already shows one canonical spelling regardless
+    of which edition's row was actually picked."""
+    canon = _canon_portfolio(portfolio)
+    return _PORTFOLIO_VARIANTS.get(canon, {canon, portfolio})
 
 
 def _budget_year(edition):
@@ -274,6 +190,20 @@ def _stitch_series(rows, latest_edition=LATEST_BUDGET_EDITION):
     year with no estimated_actual yet, use latest_edition's own
     budget/forward_estimate figure. Shared by program_profile,
     portfolio_profile, and agency_outcome_profile below.
+
+    Callers MUST pass `rows` ordered by edition -- excluding
+    EXCLUDED_ACTUAL_EDITIONS (module-level, above) from ever contributing
+    an estimated_actual figure settles the one real case of two editions
+    both claiming the same fiscal_year's estimated_actual, so there's
+    nothing left to overwrite there; order still matters for the final
+    budget/forward_estimate fallback pass (must land on latest_edition
+    specifically), so every call site below keeps `.order_by("edition")`
+    regardless.
+
+    2022-23 October Budget is the one case where two editions both claim
+    the same fiscal_year's estimated_actual (both it and 2022-23 March
+    Budget restate 2021-22) -- see EXCLUDED_ACTUAL_EDITIONS above for why
+    its own figure is never used at all, not even as a last resort.
     """
     summed = defaultdict(int)
     for r in rows:
@@ -283,7 +213,7 @@ def _stitch_series(rows, latest_edition=LATEST_BUDGET_EDITION):
 
     by_fiscal_year = {}
     for (fy, etype, ed), amt in summed.items():
-        if etype == "estimated_actual":
+        if etype == "estimated_actual" and ed not in EXCLUDED_ACTUAL_EDITIONS:
             by_fiscal_year[fy] = {
                 "fiscal_year": fy,
                 "estimate_type": etype,
@@ -451,28 +381,50 @@ def _build_measure_detail(measure_name, edition):
 
 @api_view(["GET"])
 def program_profile(request):
-    """?program_name=<name> -> one program's long-run financial profile,
-    stitched from every ingested Budget edition (2017-18 through the
-    latest): the estimated_actual figure for every year that has one
-    (the most authoritative retrospective figure available -- reported by
-    the Budget edition immediately following that year), and for years
-    with no estimated_actual yet, the latest Budget edition's own
-    budget/forward_estimate figure. program_name is used alone, not
-    scoped to an agency, because agency naming drifts heavily across
-    calendar years for the exact same real program (e.g. this program's
-    agency has been spelled "DET", "ESE", "Education, Skills and
-    Employment DESE", and "Education" across the 9 ingested editions) --
-    program_name is the stable identifier program_expenses was built
-    around for exactly this reason.
+    """?program_name=<name>&portfolio=<portfolio> -> one program's
+    long-run financial profile, stitched from every ingested Budget
+    edition (2017-18 through the latest): the estimated_actual figure
+    for every year that has one (the most authoritative retrospective
+    figure available -- reported by the Budget edition immediately
+    following that year), and for years with no estimated_actual yet,
+    the latest Budget edition's own budget/forward_estimate figure.
+
+    portfolio is required, not optional -- same reasoning as
+    measures_by_program()'s own docstring: a program_name can legitimately
+    mean two different things under two different portfolio eras (e.g. a
+    machinery-of-government transfer, not just a spelling drift), and
+    each needs its own independent profile rather than one merged/
+    stitched line. Unlike portfolio, agency is deliberately NOT part of
+    the key -- agency naming drifts heavily across calendar years for
+    the exact same real program within one portfolio (e.g. this
+    program's agency has been spelled "DET", "ESE", "Education, Skills
+    and Employment DESE", and "Education" across ingested editions),
+    and program_name is the stable identifier program_expenses was
+    built around for exactly that case.
+
+    The portfolio match itself is expanded via _portfolio_history() to
+    every raw spelling of the same real portfolio (see its own docstring)
+    -- program_hierarchy() (the picker this feeds) already shows one
+    canonical portfolio name regardless of which edition's row was
+    actually picked, so an exact-string match here would silently drop
+    every edition whose folder spelled that same real portfolio
+    differently (confirmed: "Promotion of Australia's export and other
+    international economic interests" (DFAT) looked like it was missing
+    most editions' data purely because its portfolio folder was named
+    "Foreign Affairs", "DFAT", "Foreign Affairs & Trade" and "Foriegn
+    Affairs & Trade" in different years).
     """
     program_name = request.query_params.get("program_name")
-    if not program_name:
+    portfolio = request.query_params.get("portfolio")
+    if not program_name or not portfolio:
         return Response(
-            {"detail": "program_name query param is required"}, status=400
+            {"detail": "program_name and portfolio query params are required"}, status=400
         )
 
     rows = list(
-        ProgramExpense.objects.filter(program_name=program_name).values(
+        ProgramExpense.objects.filter(
+            program_name=program_name, portfolio__in=_portfolio_history(portfolio)
+        ).values(
             "edition",
             "agency",
             "fiscal_year",
@@ -480,7 +432,7 @@ def program_profile(request):
             "amount_thousands",
             "outcome_number",
             "outcome_description",
-        )
+        ).order_by("edition")
     )
     if not rows:
         return Response({"detail": "not found"}, status=404)
@@ -493,6 +445,7 @@ def program_profile(request):
     return Response(
         {
             "program_name": program_name,
+            "portfolio": portfolio,
             "outcome_number": meta["outcome_number"],
             "outcome_description": meta["outcome_description"],
             "series": series,
@@ -502,31 +455,39 @@ def program_profile(request):
 
 @api_view(["GET"])
 def program_estimate_history(request):
-    """?program_name=<name> -> the raw material for a "how has the
-    Budget's own forecast for this program moved with each round"
-    chart: one "vintage" series per ingested edition (exactly what that
-    Budget round itself reported for this program -- its current year's
-    budget figure plus its own forward estimates for the following
-    years), alongside actual_series -- the realised estimated_actual
-    figure for every year one exists, the same authoritative figures
-    program_profile()'s own stitched series prefers.
+    """?program_name=<name>&portfolio=<portfolio> -> the raw material
+    for a "how has the Budget's own forecast for this program moved
+    with each round" chart: one "vintage" series per ingested edition
+    (exactly what that Budget round itself reported for this program --
+    its current year's budget figure plus its own forward estimates for
+    the following years), alongside actual_series -- the realised
+    estimated_actual figure for every year one exists, the same
+    authoritative figures program_profile()'s own stitched series
+    prefers.
 
     Unlike program_profile(), nothing here is stitched/deduplicated
     across editions -- every edition's own rows survive as their own
     line, which is the whole point (seeing e.g. the 2022-23 October
     Budget's forecast diverge from the 2022-23 March Budget's, or every
     edition's forward estimates gradually converging toward the eventual
-    actual). program_name is used alone, unscoped by agency/portfolio,
-    for the same reason program_profile() is -- see its own docstring.
+    actual). portfolio is required, unscoped only by agency, for the
+    same reason program_profile() is -- see its own docstring. The
+    portfolio match is likewise expanded via _portfolio_history() -- see
+    program_profile()'s own docstring for why an exact match would
+    silently drop editions whose folder spelled the same real portfolio
+    differently.
     """
     program_name = request.query_params.get("program_name")
-    if not program_name:
+    portfolio = request.query_params.get("portfolio")
+    if not program_name or not portfolio:
         return Response(
-            {"detail": "program_name query param is required"}, status=400
+            {"detail": "program_name and portfolio query params are required"}, status=400
         )
 
     rows = list(
-        ProgramExpense.objects.filter(program_name=program_name).values(
+        ProgramExpense.objects.filter(
+            program_name=program_name, portfolio__in=_portfolio_history(portfolio)
+        ).values(
             "edition",
             "budget_year",
             "fiscal_year",
@@ -572,9 +533,14 @@ def program_estimate_history(request):
     # ingested so far.
     vintages.sort(key=lambda v: (v["budget_year"], v["edition"]))
 
+    # Excludes EXCLUDED_ACTUAL_EDITIONS the same way _stitch_series does
+    # (see its own docstring) -- this function doesn't call _stitch_series
+    # itself (it needs the full per-edition vintages list too, not just
+    # the stitched actual line), so the same exclusion has to be applied
+    # here independently. Keep both in sync.
     actual_by_fy = {}
     for (edition, budget_year, fy, etype), amt in summed.items():
-        if etype == "estimated_actual":
+        if etype == "estimated_actual" and edition not in EXCLUDED_ACTUAL_EDITIONS:
             actual_by_fy[fy] = amt
     actual_series = [
         {"fiscal_year": fy, "amount_thousands": amt}
@@ -588,12 +554,63 @@ def program_estimate_history(request):
     return Response(
         {
             "program_name": program_name,
+            "portfolio": portfolio,
             "outcome_number": meta["outcome_number"],
             "outcome_description": meta["outcome_description"],
             "vintages": vintages,
             "actual_series": actual_series,
         }
     )
+
+
+@api_view(["GET"])
+def related_programs(request):
+    """?program_name=<name>&portfolio=<portfolio> -> other programs a human
+    has confirmed are almost certainly the same real function under a
+    different legal name (see related_programs.py's own module docstring
+    for why this is a curated list, not something detected here) -- e.g.
+    viewing "Administrative Review Tribunal" surfaces "Administrative
+    Appeals Tribunal" and "...and Immigration Assessment Authority" as its
+    predecessors. Feeds ProgramDeepDivePage's "these might be the same
+    program" suggestion, which lets the user decide whether to view them
+    combined (via the ordinary multi-program comparison page) rather than
+    silently merging them anywhere identity is used for real.
+
+    Each returned program includes its own earliest/latest edition
+    (expanded across every raw portfolio spelling via _portfolio_history,
+    same as program_profile() itself) so the suggestion can show *when*
+    each one was in use, not just its name.
+    """
+    program_name = request.query_params.get("program_name")
+    portfolio = request.query_params.get("portfolio")
+    if not program_name or not portfolio:
+        return Response(
+            {"detail": "program_name and portfolio query params are required"}, status=400
+        )
+
+    note, others = find_related(program_name, _canon_portfolio(portfolio))
+    if not others:
+        return Response({"note": None, "related": []})
+
+    related = []
+    for other in others:
+        editions = list(
+            ProgramExpense.objects.filter(
+                program_name=other["program_name"],
+                portfolio__in=_portfolio_history(other["portfolio"]),
+            ).values_list("edition", "budget_year").distinct()
+        )
+        if not editions:
+            continue
+        editions.sort(key=lambda e: (e[1], e[0]))
+        related.append({
+            "program_name": other["program_name"],
+            "portfolio": other["portfolio"],
+            "earliest_edition": editions[0][0],
+            "latest_edition": editions[-1][0],
+        })
+
+    return Response({"note": note, "related": related})
 
 
 @api_view(["GET"])
@@ -701,6 +718,131 @@ def program_hierarchy(request):
 
 
 @api_view(["GET"])
+def program_outcome_audit(request):
+    """-> every (outcome_number, program_name) combination across EVERY
+    ingested edition's program_expenses, with every raw portfolio/agency
+    spelling that ever reported under it folded together and one
+    estimated_actual figure per year -- a manual data-quality review tool
+    (KNOWN_GAPS.md-adjacent, not used by any other page).
+
+    Grouped by (outcome_number, program_name) rather than the
+    (program_name, portfolio) identity every other endpoint in this file
+    uses deliberately: those endpoints need to keep a genuine machinery-
+    of-government transfer as two separate series (see program_profile's
+    own docstring). This page exists for the opposite reason -- a portfolio
+    rename or spelling drift (see _PORTFOLIO_ALIASES, and the "Foreign
+    Affairs and Trade" investigation that motivated this endpoint) makes
+    an otherwise-continuous program look sparse/broken when split by raw
+    portfolio spelling, and a human reviewing data quality needs the
+    single wide picture to actually spot what's missing. Outcome number
+    (not portfolio) is the extra key alongside program_name because a
+    program name could in principle recur under a genuinely different
+    outcome; portfolio/agency are surfaced as columns to review, not used
+    to split rows.
+
+    Each row's `rows` list is every underlying program_expenses record
+    (every estimate_type, not just estimated_actual) so the frontend can
+    show a drill-down -- the whole point is letting a human check *why* a
+    year is blank: no data at all, or just no estimated_actual yet.
+    """
+    alias_lookup = {
+        (a["edition"], a["short_name"]): a["formal_name"]
+        for a in AgencyAlias.objects.values("edition", "short_name", "formal_name")
+    }
+
+    def gap_years(years):
+        """Fiscal years missing *between* the earliest and latest year this
+        program has an estimated_actual for -- e.g. actuals for 2016-17,
+        2017-18, 2019-20 has a one-year gap at 2018-19. Years before the
+        earliest or after the latest aren't a "gap": a program starting or
+        ending partway through the ingested window is just incomplete
+        coverage at the edge, not a break in the middle of its own run.
+        Powers this page's "only show programs with a gap" filter (see the
+        2026-08 investigation that found ~50 of these were actually
+        unaliased portfolio spellings, not real gaps, before this existed
+        as a standing filter rather than a one-off script)."""
+        if len(years) < 2:
+            return []
+        start_years = sorted(int(fy.split("-")[0]) for fy in years)
+        missing = []
+        for a, b in zip(start_years, start_years[1:]):
+            for y in range(a + 1, b):
+                missing.append(f"{y}-{(y + 1) % 100:02d}")
+        return missing
+
+    # Ordered by edition -- required by _stitch_series below (see its own
+    # docstring): the one real case of two editions both claiming the
+    # same fiscal_year's estimated_actual (2022-23 March Budget and
+    # 2022-23 October Budget both restate 2021-22) is resolved there by
+    # excluding October's figure rather than summing the two into a
+    # double-counted total.
+    raw_rows = list(
+        ProgramExpense.objects.values(
+            "edition", "portfolio", "agency", "outcome_number", "outcome_description",
+            "program_number", "program_name", "fiscal_year", "estimate_type",
+            "amount_thousands",
+        ).order_by("edition")
+    )
+
+    groups = {}
+    for r in raw_rows:
+        key = (r["outcome_number"], r["program_name"])
+        g = groups.setdefault(key, {
+            "outcome_descriptions": Counter(),
+            "portfolios": set(),
+            "agencies": set(),
+            "program_numbers": set(),
+            "rows": [],
+        })
+        if r["outcome_description"]:
+            g["outcome_descriptions"][r["outcome_description"]] += 1
+        g["portfolios"].add(_canon_portfolio(r["portfolio"]))
+        g["agencies"].add(alias_lookup.get((r["edition"], r["agency"]), r["agency"]))
+        g["program_numbers"].add(r["program_number"])
+        g["rows"].append({
+            "edition": r["edition"],
+            "portfolio": r["portfolio"],
+            "agency": r["agency"],
+            "program_number": r["program_number"],
+            "fiscal_year": r["fiscal_year"],
+            "estimate_type": r["estimate_type"],
+            "amount_thousands": r["amount_thousands"],
+        })
+
+    results = []
+    for (outcome_number, program_name), g in groups.items():
+        # _stitch_series also fills years with no estimated_actual from
+        # latest_edition's own budget/forward_estimate -- drop those here,
+        # keeping only genuine estimated_actual figures (its own
+        # "estimate_type" tags which is which).
+        stitched = _stitch_series(g["rows"])
+        years = {
+            s["fiscal_year"]: s["amount_thousands"]
+            for s in stitched if s["estimate_type"] == "estimated_actual"
+        }
+        results.append({
+            "outcome_number": outcome_number,
+            "outcome_description": (
+                g["outcome_descriptions"].most_common(1)[0][0]
+                if g["outcome_descriptions"] else None
+            ),
+            "program_name": program_name,
+            "program_numbers": sorted(n for n in g["program_numbers"] if n),
+            "portfolios": sorted(p for p in g["portfolios"] if p),
+            "agencies": sorted(a for a in g["agencies"] if a),
+            "years": years,
+            "gap_years": gap_years(years),
+            "rows": sorted(g["rows"], key=lambda r: (r["edition"], r["fiscal_year"])),
+        })
+
+    results.sort(key=lambda r: (
+        r["outcome_number"] if r["outcome_number"] is not None else -1,
+        r["program_name"] or "",
+    ))
+    return Response(results)
+
+
+@api_view(["GET"])
 def portfolio_profile(request):
     """?portfolio=<name>&budget_year=<year> -> for every agency in that
     portfolio as of budget_year (a single-year snapshot -- which agencies
@@ -737,6 +879,7 @@ def portfolio_profile(request):
             ProgramExpense.objects.filter(
                 portfolio=portfolio, agency__in=all_names
             ).values("fiscal_year", "estimate_type", "edition", "amount_thousands")
+            .order_by("edition")
         )
         result.append({"agency": agency, "series": _stitch_series(rows)})
 
@@ -798,6 +941,7 @@ def agency_outcome_profile(request):
                 portfolio=portfolio,
                 outcome_number=o["outcome_number"],
             ).values("fiscal_year", "estimate_type", "edition", "amount_thousands")
+            .order_by("edition")
         )
         result.append(
             {

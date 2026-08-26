@@ -31,6 +31,43 @@ from build_db import ROOT, DB_PATH, iter_files, clean_agency, budget_year
 
 TITLE_RE = re.compile(r"^table\s+1\.1:?\s*(.+?)\s+resource\s+statement", re.I)
 SHEET_1_1_RE = re.compile(r"(?<![\d.])1\.1(?![\d.])")
+# The PGPA Act classifies every agency as a "(non-)corporate Commonwealth
+# entity", and a fair number of editions bake that generic classifier
+# straight into the Table 1.1 title alongside (or, worse, *instead of*) the
+# agency's own name -- "Entity ACARA", "ACARA Entity", "Corporate Entity
+# APVMA", "Corporate Commonwealth entity Murray-Darling Basin Authority".
+# Stripped from either end (in a loop, since some strings have junk on
+# both sides) so the recovered name matches the plain "ACARA" every other
+# edition already extracts, rather than reading as a different agency.
+_ENTITY_QUALIFIER_RE = re.compile(
+    r"(corporate\s+commonwealth\s+entity|non-corporate\s+commonwealth\s+entity"
+    r"|corporate\s+entity|entity)", re.I)
+_LEADING_QUALIFIER_RE = re.compile(rf"^{_ENTITY_QUALIFIER_RE.pattern}\s*[:\-]?\s*", re.I)
+_TRAILING_QUALIFIER_RE = re.compile(rf"\s*[:\-]?\s*{_ENTITY_QUALIFIER_RE.pattern}$", re.I)
+# Some editions' Table 1.1 title is *only* this generic classifier, with the
+# agency's real name never appearing in it at all (e.g. literally "Table
+# 1.1: Entity resource statement") -- confirmed directly against a 2021-22
+# Attorney-General's-portfolio file. Left unhandled, every agency in that
+# file collapses to the same bare formal_name "Entity", which then makes
+# _agency_history() (backend/measures/views.py) treat every one of those
+# unrelated agencies as if they were the same real agency, since it groups
+# short_names purely by a shared formal_name. A handful of other editions
+# instead leave an unfilled template placeholder ("Entity xxxxxx", "Entity
+# XXXXX") -- the same kind of leftover boilerplate the "(insert program
+# name)" case is for program names. Both are true absences of a real name,
+# so -- consistent with this module's existing "unresolved rather than
+# guessed at" rule for missing Table 1.1 sheets -- extract_formal_name()
+# returns None for them rather than a misleading placeholder string.
+_PLACEHOLDER_NAME_RE = re.compile(r"^x{3,}$", re.I)
+
+
+def _strip_entity_qualifier(name):
+    prev = None
+    while prev != name:
+        prev = name
+        name = _LEADING_QUALIFIER_RE.sub("", name).strip()
+        name = _TRAILING_QUALIFIER_RE.sub("", name).strip()
+    return name
 
 
 def _norm_dashes(s):
@@ -70,7 +107,11 @@ def extract_formal_name(path):
     m = TITLE_RE.match(_norm_dashes(str(title)).strip())
     if not m:
         return None
-    return m.group(1).strip().rstrip("-").strip()
+    name = m.group(1).strip().rstrip("-").strip()
+    name = _strip_entity_qualifier(name)
+    if not name or _PLACEHOLDER_NAME_RE.match(name):
+        return None
+    return name
 
 
 def create_schema(con):

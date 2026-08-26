@@ -98,6 +98,28 @@ in the current build). Known causes:
   above its program data. There is no reliable way to recover fiscal-year
   / estimate-type labels for such a sheet, so it is correctly skipped
   (yields zero rows) rather than guessing.
+- **Mid-cycle program restructures (`patches/`)** — a handful of editions
+  restructured an agency's outcome/program numbering *during* the budget
+  year they cover, which leaves every current-structure table reporting a
+  literal $0 for the prior year's "estimated actual" column (the new
+  numbering didn't exist yet that year). Some of these workbooks also
+  carry the pre-restructure tables side by side (e.g. "Table 2.3.1 old"),
+  which have the real prior-year figures but $0 going forward instead.
+  Because this isn't a generic parsing rule — it's specific, verified
+  knowledge about one document — it isn't handled in `parse_pbs.py`.
+  Instead it's handled by a small, separate `patches/` package: each
+  module there declares the exact source file it targets (`TARGET_FILE`)
+  and documents in its own docstring what's wrong with that document and
+  why the fix is safe, and `build_db.py` runs any matching patch on a
+  workbook's parsed records before its own conflict resolution. See
+  `patches/dss_2021_22_outcome3_old_actuals.py` for the first instance
+  (2021-22 DSS PBS, Outcome 1/2/3) — it only recovers a program's
+  prior-year figure when the program's *number and name* are unchanged
+  between the old and new tables; where a program was renamed as part of
+  the restructure (e.g. Outcome 1's Program 1.1: "Family Tax Benefit" →
+  "Family Assistance"), the two tables' dollar figures aren't safely
+  interchangeable, so those rows are left at $0 as a genuine, unresolved
+  data gap rather than guessed at.
 
 ## 4. Agency name drift
 

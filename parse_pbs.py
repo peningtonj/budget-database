@@ -89,11 +89,177 @@ def fiscal_year(text):
     return f"{m.group(1)}-{m.group(2)}" if m else None
 
 
+_PROGRAM_NAME_PLACEHOLDER_RE = re.compile(r"^insert program name$", re.I)
+
+# Known one-off misspellings/wording drift in a source workbook's own
+# program-name header, each individually confirmed against smooth dollar-
+# figure continuity across the edition boundary where the text changes
+# (never a genuine rename or a different real program that merely reads
+# similarly -- e.g. "ABC"/"SBS General Operational Activities" and
+# "Program Support for Outcome 1"/"...Outcome 2" were both considered and
+# rejected: different broadcasters, different outcomes). Where an edition
+# also carries its own agency-name prefix ("ANSTO - ...", "DEWR - ...",
+# "AFP-..."), stripped alongside the misspelling since it's the same class
+# of accidental drift -- the agency is already its own column on every
+# row, so repeating it inside program_name only fragments the series
+# without adding information.
+#
+# Picking a winner between two otherwise-equally-valid spellings/wordings
+# (not a strict typo either way -- "monies"/"money", "Statement"/
+# "Statements", British/American spelling, etc.) follows the same "prefer
+# the latest edition" rule chosen for pure-case duplicates, except where
+# that would enshrine an actual error (e.g. keeping "ABC General
+# Operation Activities" just because it's more recent) or where a real-
+# world authoritative name is unambiguous (ACARA/ACNC/APRA/AFTRS's own
+# actual names, "Aboriginal and Torres Strait Islander" as the standard
+# capitalization) -- those override recency instead.
+#
+# A dict, not a generic rule: each is a specific known text a specific
+# document got wrong or reworded, not a repeating pattern across the
+# corpus (see clean_agency's AGENCY_STRIP vs patches/ for the same
+# generic-vs-specific distinction already applied to agency names).
+_KNOWN_PROGRAM_NAME_TYPOS = {
+    "ABC General Operation Activities": "ABC General Operational Activities",
+    # ATO's own Program 1.3 (Treasury) -- confirmed via smooth dollar
+    # continuity across every boundary: not a one-way rename (unlike
+    # Administrative Appeals Tribunal -> Administrative Review Tribunal,
+    # see related_programs.py), it flips back and forth between these two
+    # names edition to edition (even reverting in 2024-25 after already
+    # switching in 2022-23 October), so it reads as ATO's own inconsistent
+    # terminology for one continuous line item rather than two genuinely
+    # different successive programs.
+    "Australian Business Register": "Australian Business Registry Services",
+    "Operation of a National Register of Security Intersets in Personal Property":
+        "Operation of a National Register of Security Interests in Personal Property",
+    # AUKUS Nuclear-Powered Submarine Program -- reported by several
+    # different agencies, each under its own portfolio (correctly kept
+    # separate); only ANSTO's and DEWR's own series fragment across
+    # editions, plus AFP's one-off row for consistency with the rest.
+    "AFP-Nuclear Powered Submarine Program": "Nuclear-Powered Submarine Program",
+    "ANSTO - Nuclear-Powered Submarine Program": "Nuclear-Powered Submarine Program",
+    "DEWR - Nuclear Powered Submarine Program": "DEWR - Nuclear-powered Submarine Program",
+    "Support for National Diasability Insurance Scheme providers in relation to registration":
+        "Support for National Disability Insurance Scheme providers in relation to registration",
+    "Regulatory oversight of Safety Cases, Well Operations Management Plans and Environment Plans coupled with effective monitoring, investigation and enforcement":
+        "Regulatory oversight of Safety Cases, Wells Operations Management Plans and Environment Plans coupled with effective monitoring, investigation and enforcement",
+    "Regulatory oversight of Safety Cases, Well Operations Management Plans and Environment Plans coupled with effecive monitoring, investigation and enforcement":
+        "Regulatory oversight of Safety Cases, Wells Operations Management Plans and Environment Plans coupled with effective monitoring, investigation and enforcement",
+    "Independent Parliamentary Expense Authority - Travel Oversight and Reporting":
+        "Independent Parliamentary Expenses Authority - Travel Oversight and Reporting",
+    "Collect, preserve and share the national audio visual collection":
+        "Collect, preserve and share the national audiovisual collection",
+    "Refugee, Humanitarian, Settlement and Migrant Services":
+        "Refugee, Humanitarian Settlement and Migrant Services",
+    "Support for the Governor-General and Offical Activities":
+        "Support for the Governor-General and Official Activities",
+    "Support of the Governor-General and Official Activities":
+        "Support for the Governor-General and Official Activities",
+    "Communications, regulation, planning and licensing":
+        "Communications regulation, planning and licensing",
+    "Community inclusion and capacity developments grants":
+        "Community inclusion and capacity development grants",
+    "Australian Charities and Not-for-profit Commission":
+        "Australian Charities and Not-for-profits Commission",
+    "Australian Charities and Not-for-profit": "Australian Charities and Not-for-profits",
+    "Personal Insolvency and Trustees Services": "Personal Insolvency and Trustee Services",
+    "Programmes to promote Australia's exports and other international economic interests":
+        "Programs to promote Australia's exports and other international economic interests",
+    "Australians have access to independent human rights complaint handling and public inquiry processes and benefit from human rights education, promotion and monitoring and compliance activities":
+        "Australians have access to independent human rights complaint handling and public inquiries processes and benefit from human rights education, promotion and monitoring, and compliance activities",
+    "Commonwealth CourtsRegistry Services": "Commonwealth Courts Registry Services",
+    "Multicutural Affairs and Citizenship": "Multicultural Affairs and Citizenship",
+    "Financial Statements Audit Services": "Financial Statement Audit Services",
+    "Performance Statements Audit Services": "Performance Statement Audit Services",
+    "Office of the eSafety Commisioner": "Office of the eSafety Commissioner",
+    "Office of the Inspector General of Intelligence and Security":
+        "Office of the Inspector-General of Intelligence and Security",
+    "National Capital Functions": "National Capital Function",
+    "Other Departmental DHOR": "Other Departmental DHR",
+    "Assessment and Reports": "Assessments and Reports",
+    "Fuel Tax Credits Scheme": "Fuel Tax Credit Scheme",
+    "Regional Coperation": "Regional Cooperation",
+    "Aborignal and Torres strait islander Economic Participation and Wealth Creation":
+        "Aboriginal and Torres Strait Islander Economic Participation and Wealth Creation",
+    "Aborignal and Torres Strait Islander Economic Participation and Wealth Creation":
+        "Aboriginal and Torres Strait Islander Economic Participation and Wealth Creation",
+    "Border-Revenue Collection": "Border Revenue Collection",
+    "Banking Act 1959, Life Insurance Act 1995, unclaimed money and special accounts":
+        "Banking Act 1959, Life Insurance Act 1995, Unclaimed monies and special accounts",
+    "Other Department - DHA": "Other Departmental - DHA",
+    "IMA Offshore Management": "UMA Offshore Management",
+    "War Graves1": "War Graves",
+    "The Digital Transformation Agency": "Digital Transformation Agency",
+    "Jobs, Land and Economy": "Jobs, Land and the Economy",
+    "Science and Industrial Research and Infrastructure":
+        "Scientific and Industrial Research and Infrastructure",
+    "Program Support for the NDIS Quality and Safeguards Commission":
+        "Program support for NDIS Quality and Safeguards Commission",
+    "Australia Prudential Regulation Authority": "Australian Prudential Regulation Authority",
+    "Australia Film Television and Radio School": "Australian Film, Television and Radio School",
+    # Fair Work Ombudsman's own "Education Services..." program -- three
+    # cosmetic variants (dash presence/spacing, "organisation" vs
+    # "organisations") of the one real program, confirmed distinct from
+    # ABCC's own similarly-worded but genuinely different program (a
+    # different agency's own Program 1.1 in the same portfolio/edition).
+    "Education Services and Compliance Activities-To educate employers, employees, organisations and contractors about the workplace relations system and to ensure compliance with workplace laws":
+        "Education Services and Compliance Activities - To educate employers, employees, organisations and contractors about the workplace relations system and to ensure compliance with workplace laws",
+    "Education Services and Compliance Activities To educate employers, employees, organisations and contractors about the workplace relations system and to ensure compliance with workplace laws":
+        "Education Services and Compliance Activities - To educate employers, employees, organisations and contractors about the workplace relations system and to ensure compliance with workplace laws",
+    "Education Services and Compliance Activities - To educate employers, employees, organisation and contractors about the workplace relations system and to ensure compliance with workplace laws":
+        "Education Services and Compliance Activities - To educate employers, employees, organisations and contractors about the workplace relations system and to ensure compliance with workplace laws",
+}
+
+
 def clean_program_name(name):
     name = norm(name)
     # drop trailing footnote markers like " (a)", " (a)(b)"
     name = re.sub(r"(\s*\([a-z]\))+\s*$", "", name)
-    return name.strip()
+    # A trailing full stop is never part of a real program name (these are
+    # short titles, not sentences) -- some editions' headers end with one
+    # anyway, fragmenting an otherwise-identical name across editions.
+    name = re.sub(r"\.\s*$", "", name)
+    # Curly quotes/apostrophe and en/em-dash vs plain ASCII: the same
+    # cosmetic drift _canon_measure_name (parse_bp2.py) already normalizes
+    # for measure names, never applied here for program names -- e.g.
+    # "Veterans' Counselling..." vs "Veterans' Counselling..." (curly '),
+    # "Murray-Darling Basin Authority" vs "Murray-Darling..." (en-dash).
+    name = name.replace("’", "'").replace("‘", "'")
+    # Dash used as a clause separator (adjacent to whitespace on at least
+    # one side, however irregularly spaced -- e.g. a run of Attorney-
+    # General's Department program names that appear both as "Expenses -
+    # X", "Expenses- X" and "Expenses-X" across editions) normalizes to a
+    # consistent " - ". A dash with *no* surrounding whitespace at all
+    # (e.g. "Murray-Darling") only has its character swapped to a plain
+    # hyphen, not respaced -- that shape is genuinely ambiguous with the
+    # rare all-unspaced separator case above, and it's safer to leave a
+    # handful of those unmerged than risk inserting a stray space into a
+    # real compound name.
+    name = re.sub(r"\s+[–—‑]\s*", " - ", name)
+    name = re.sub(r"\s*[–—‑]\s+", " - ", name)
+    name = name.replace("–", "-").replace("—", "-").replace("‑", "-")
+    # "&" always means "and" in this dataset (confirmed: no R&D-style
+    # abbreviation or brand-name usage in any ingested program name) --
+    # e.g. "Research & Development Tax Incentive" vs "...and...".
+    name = re.sub(r"\s*&\s*", " and ", name)
+    # Some workbooks wrap the *entire* program name in parentheses for no
+    # discernible reason (confirmed: "(ABC General Operational
+    # Activities)", "(Australian Institute of Family Studies)", etc. --
+    # each also appears without the parens in other editions, fragmenting
+    # an otherwise-continuous program's history). Strip one fully-wrapping
+    # pair.
+    m = re.match(r"^\((.+)\)$", name.strip())
+    if m:
+        name = m.group(1)
+    name = name.strip()
+    # An unfilled template placeholder some workbooks left behind ("(Insert
+    # program name)", parens already stripped above) -- not a real name at
+    # all, so this program's rows should end up unnamed (see the existing
+    # null-program_name rows from other missing-header cases) rather than
+    # carry a misleading literal string that isn't this program's actual
+    # identity.
+    if _PROGRAM_NAME_PLACEHOLDER_RE.match(name):
+        return None
+    return _KNOWN_PROGRAM_NAME_TYPOS.get(name, name)
 
 
 def col_types(header_row):

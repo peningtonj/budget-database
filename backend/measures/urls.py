@@ -10,6 +10,7 @@ urlpatterns = [
         views.program_estimate_history,
         name="program-estimate-history",
     ),
+    path("related-programs/", views.related_programs, name="related-programs"),
     path("portfolio-profile/", views.portfolio_profile, name="portfolio-profile"),
     path(
         "agency-outcome-profile/",
@@ -21,6 +22,11 @@ urlpatterns = [
     path("by-id/", views.measure_by_id, name="measure-by-id"),
     path("combined/", views.measure_combined, name="measure-combined"),
     path("program-hierarchy/", views.program_hierarchy, name="program-hierarchy"),
+    path(
+        "program-outcome-audit/",
+        views.program_outcome_audit,
+        name="program-outcome-audit",
+    ),
     path("by-program/", views.measures_by_program, name="measures-by-program"),
     path("search-text/", views.measure_text_search, name="measure-text-search"),
     path("search-topic/", views.measure_topic_search, name="measure-topic-search"),
