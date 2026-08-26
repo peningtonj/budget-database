@@ -1,5 +1,6 @@
 import re
 import sys
+import threading
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -613,6 +614,10 @@ def related_programs(request):
     return Response({"note": note, "related": related})
 
 
+_program_hierarchy_cache = None
+_program_hierarchy_lock = threading.Lock()
+
+
 @api_view(["GET"])
 def program_hierarchy(request):
     """-> every (portfolio, agency, outcome, program) combination across
@@ -624,6 +629,38 @@ def program_hierarchy(request):
     the same client-side-cascading-filter pattern measure_list() already
     uses (fetch once, filter as each picker level is chosen) is simpler
     than four separate round trips per pick.
+
+    Cached in-process after the first call (_program_hierarchy_cache):
+    unlike every other view in this file, this one reads and reprocesses
+    the WHOLE program_expenses table (~20k rows across every ingested
+    edition, a ~500KB/1,600-row response) rather than something scoped to
+    one measure/program/agency -- measured at ~0.4-0.6s recomputed from
+    scratch on every request, next to ~15ms for a single-measure fetch.
+    That's cheap on a fast dev machine but exactly the kind of per-request
+    cost that can stretch past a timeout under a resource-constrained
+    host's CPU throttling. The underlying data only ever changes via a
+    full DB rebuild + redeploy, which always restarts the process (and
+    so clears this module-level cache) anyway -- there's nothing to
+    invalidate it for otherwise. Guarded by a lock since gunicorn's
+    gthread workers mean several threads share this module: without it,
+    two requests landing before the first finishes populating the cache
+    would each redundantly repeat the full computation.
+    """
+    global _program_hierarchy_cache
+    if _program_hierarchy_cache is not None:
+        return Response(_program_hierarchy_cache)
+
+    with _program_hierarchy_lock:
+        if _program_hierarchy_cache is not None:
+            return Response(_program_hierarchy_cache)
+        _program_hierarchy_cache = _build_program_hierarchy()
+    return Response(_program_hierarchy_cache)
+
+
+def _build_program_hierarchy():
+    """The actual computation behind program_hierarchy() -- split out so
+    the caching/locking above reads cleanly as "check cache, else build
+    once and cache it," not tangled up with the query/dedup logic itself.
 
     Deliberately NOT scoped to the latest edition alone (an earlier
     version was, and only showed the current year's own agencies/
@@ -710,11 +747,10 @@ def program_hierarchy(request):
                 "program_name": r["program_name"],
             }
 
-    results = sorted(
+    return sorted(
         seen.values(),
         key=lambda r: (r["portfolio"], r["agency"], r["outcome_number"], r["program_number"]),
     )
-    return Response(results)
 
 
 @api_view(["GET"])
