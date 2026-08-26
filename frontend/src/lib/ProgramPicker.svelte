@@ -11,14 +11,24 @@
   let { onSummarise } = $props();
 
   let hierarchy = $state([]);
+  // outcome_description keyed by the same "portfolio␟agency␟outcome_number"
+  // string program_hierarchy() itself joins with -- sent once per unique
+  // outcome rather than repeated on every one of that outcome's own
+  // program rows (see that endpoint's own docstring for why).
+  let outcomeDescriptions = $state({});
   let loading = $state(true);
   let error = $state(null);
+
+  function outcomeKey(portfolio, agency, outcomeNumber) {
+    return `${portfolio}␟${agency}␟${outcomeNumber}`;
+  }
 
   function loadHierarchy() {
     loading = true;
     fetchProgramHierarchy()
-      .then((rows) => {
-        hierarchy = rows;
+      .then((data) => {
+        hierarchy = data.programs;
+        outcomeDescriptions = data.outcomes;
         error = null;
       })
       .catch((e) => {
@@ -118,7 +128,13 @@
               .filter((r) => r.portfolio === selectedPortfolio && r.agency === selectedAgency)
               .map((r) => [r.outcome_number, r]),
           ).values(),
-        ].sort((a, b) => a.outcome_number - b.outcome_number)
+        ]
+          .map((r) => ({
+            ...r,
+            outcome_description:
+              outcomeDescriptions[outcomeKey(r.portfolio, r.agency, r.outcome_number)] ?? "",
+          }))
+          .sort((a, b) => a.outcome_number - b.outcome_number)
       : [],
   );
 

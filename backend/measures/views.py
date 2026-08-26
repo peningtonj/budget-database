@@ -618,6 +618,14 @@ def related_programs(request):
 _program_hierarchy_cache = None
 _program_hierarchy_lock = threading.Lock()
 
+# Joins a (portfolio, agency, outcome_number) triple into the same string
+# key both program_hierarchy()'s own `outcomes` map and the frontend's
+# ProgramPicker.svelte use to look an outcome's description back up --
+# "␟" (a rare control character) rather than e.g. "|", matching the
+# ␟-joined keys already used elsewhere in this file/the frontend for the
+# same "unlikely to collide with real data" reason.
+OUTCOME_KEY_SEP = "␟"
+
 
 @api_view(["GET"])
 def program_hierarchy(request):
@@ -625,27 +633,32 @@ def program_hierarchy(request):
     EVERY ingested edition's own program_expenses filing -- the full tree
     for the Portfolio -> Agency -> Outcome -> Program picker
     (CombinedMeasuresPage's "start from a program instead of a measure"
-    entry point). Returned flat, one row per program, rather than
-    pre-nested: ~2,800 rows across every year is still small enough that
-    the same client-side-cascading-filter pattern measure_list() already
-    uses (fetch once, filter as each picker level is chosen) is simpler
-    than four separate round trips per pick.
+    entry point). Shape: `{"programs": [...], "outcomes": {...}}` --
+    `programs` flat, one row per program (not pre-nested: ~1,600 rows
+    across every year is still small enough that the same
+    client-side-cascading-filter pattern measure_list() already uses --
+    fetch once, filter as each picker level is chosen -- is simpler than
+    four separate round trips per pick), `outcomes` a
+    OUTCOME_KEY_SEP-joined-key -> description lookup, one entry per
+    unique (portfolio, agency, outcome_number) rather than repeated on
+    every one of that outcome's own program rows -- see _build_
+    program_hierarchy()'s own docstring for why that split exists.
 
     Cached in-process after the first call (_program_hierarchy_cache):
     unlike every other view in this file, this one reads and reprocesses
     the WHOLE program_expenses table (~20k rows across every ingested
-    edition, a ~500KB/1,600-row response) rather than something scoped to
-    one measure/program/agency -- measured at ~0.4-0.6s recomputed from
-    scratch on every request, next to ~15ms for a single-measure fetch.
-    That's cheap on a fast dev machine but exactly the kind of per-request
-    cost that can stretch past a timeout under a resource-constrained
-    host's CPU throttling. The underlying data only ever changes via a
-    full DB rebuild + redeploy, which always restarts the process (and
-    so clears this module-level cache) anyway -- there's nothing to
-    invalidate it for otherwise. Guarded by a lock since gunicorn's
-    gthread workers mean several threads share this module: without it,
-    two requests landing before the first finishes populating the cache
-    would each redundantly repeat the full computation.
+    edition) rather than something scoped to one measure/program/agency
+    -- measured at ~0.4-0.6s recomputed from scratch on every request,
+    next to ~15ms for a single-measure fetch. That's cheap on a fast dev
+    machine but exactly the kind of per-request cost that can stretch
+    past a timeout under a resource-constrained host's CPU throttling.
+    The underlying data only ever changes via a full DB rebuild +
+    redeploy, which always restarts the process (and so clears this
+    module-level cache) anyway -- there's nothing to invalidate it for
+    otherwise. Guarded by a lock since gunicorn's gthread workers mean
+    several threads share this module: without it, two requests landing
+    before the first finishes populating the cache would each
+    redundantly repeat the full computation.
     """
     global _program_hierarchy_cache
     if _program_hierarchy_cache is not None:
@@ -661,7 +674,8 @@ def program_hierarchy(request):
         _program_hierarchy_cache = _build_program_hierarchy()
         print(
             f"program_hierarchy: cache built in {time.time() - t0:.2f}s "
-            f"({len(_program_hierarchy_cache)} rows)",
+            f"({len(_program_hierarchy_cache['programs'])} programs, "
+            f"{len(_program_hierarchy_cache['outcomes'])} outcomes)",
             flush=True,
         )
     return Response(_program_hierarchy_cache)
@@ -671,6 +685,17 @@ def _build_program_hierarchy():
     """The actual computation behind program_hierarchy() -- split out so
     the caching/locking above reads cleanly as "check cache, else build
     once and cache it," not tangled up with the query/dedup logic itself.
+
+    Returns {"programs": [...], "outcomes": {...}} rather than a single
+    flat list of program rows each carrying their own outcome_description:
+    measured out at 724 unique outcomes' worth of description text spread
+    across 1,606 program rows -- an outcome statement is a full sentence
+    or two, repeated on every program under it, and came out to over half
+    this endpoint's total response size for information that's genuinely
+    per-outcome, not per-program. Pulling it into its own map, keyed by
+    OUTCOME_KEY_SEP.join([portfolio, agency, str(outcome_number)]), means
+    each unique outcome's text is sent once no matter how many programs
+    sit under it.
 
     Deliberately NOT scoped to the latest edition alone (an earlier
     version was, and only showed the current year's own agencies/
@@ -746,21 +771,30 @@ def _build_program_hierarchy():
     for r in resolved:
         key = (r["portfolio"], r["agency"], r["outcome_number"], r["program_number"], r["program_name"])
         if key not in seen:
+            # outcome_description deliberately left off each program row --
+            # it's a full sentence or two, and 724 unique outcomes get
+            # repeated across 1,606 program rows (2,610 before the
+            # portfolio/agency alias fixes since), which measured out to
+            # over half this endpoint's total response size. Sent once per
+            # outcome in the separate `outcomes` map below instead; the
+            # frontend looks it up by the same OUTCOME_KEY_SEP-joined key.
             seen[key] = {
                 "portfolio": r["portfolio"],
                 "agency": r["agency"],
                 "outcome_number": r["outcome_number"],
-                "outcome_description": outcome_description[
-                    (r["portfolio"], r["agency"], r["outcome_number"])
-                ],
                 "program_number": r["program_number"],
                 "program_name": r["program_name"],
             }
 
-    return sorted(
+    programs = sorted(
         seen.values(),
         key=lambda r: (r["portfolio"], r["agency"], r["outcome_number"], r["program_number"]),
     )
+    outcomes = {
+        OUTCOME_KEY_SEP.join([portfolio, agency, str(outcome_number)]): description
+        for (portfolio, agency, outcome_number), description in outcome_description.items()
+    }
+    return {"programs": programs, "outcomes": outcomes}
 
 
 @api_view(["GET"])

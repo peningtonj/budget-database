@@ -248,12 +248,18 @@ export async function fetchMeasureCombined(ids) {
   return res.json();
 }
 
-// Every (portfolio, agency, outcome, program) row across EVERY ingested
-// edition's own program_expenses filing -- fetched once and filtered
-// client-side as each level of the Portfolio -> Agency -> Outcome -> Program
-// picker is chosen, the same stale-while-revalidate-free "just filter
-// the one payload" pattern measure_list() already uses (a couple thousand
-// rows, no need for four separate round trips per pick).
+// {programs: [...], outcomes: {...}} -- every (portfolio, agency, outcome,
+// program) row across EVERY ingested edition's own program_expenses
+// filing, fetched once and filtered client-side as each level of the
+// Portfolio -> Agency -> Outcome -> Program picker is chosen, the same
+// stale-while-revalidate-free "just filter the one payload" pattern
+// measure_list() already uses (a couple thousand rows, no need for four
+// separate round trips per pick). `outcomes` is a separate
+// "portfolio␟agency␟outcome_number" -> description lookup rather than
+// each program row carrying its own copy of that outcome's full
+// description text -- see program_hierarchy()'s own docstring; a program
+// row's outcome_number plus its own portfolio/agency is the lookup key,
+// same ␟-join ProgramPicker.svelte uses to build it.
 export async function fetchProgramHierarchy() {
   const res = await fetchWithRetry(`${API_BASE}/measures/program-hierarchy/`);
   if (!res.ok) {
