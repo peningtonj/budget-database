@@ -50,6 +50,53 @@
   // this app it's used as the lookup key.
   let selectedProgramName = $state(null);
 
+  // A flat name/number search across the whole hierarchy, shown instead
+  // of the cascading drill-down once there's enough of a query to be
+  // useful -- lets you jump straight to a program you already know the
+  // name of instead of stepping through Portfolio → Agency → Outcome.
+  let programQuery = $state("");
+  const PROGRAM_SEARCH_MIN_LENGTH = 2;
+  const PROGRAM_RESULT_CAP = 50;
+
+  let programSearchResults = $derived.by(() => {
+    const q = programQuery.trim().toLowerCase();
+    if (q.length < PROGRAM_SEARCH_MIN_LENGTH) return [];
+    // Deduped the same way the tray keys programs -- (portfolio,
+    // program_name) is the stable identity here, and the hierarchy can
+    // otherwise list the same program more than once (e.g. it moved
+    // outcomes at some point).
+    const seen = new Set();
+    const results = [];
+    for (const r of hierarchy) {
+      // A handful of Parliamentary Departments rows have no program_name
+      // at all (a real gap in that source data, same story as the
+      // portfolio-less measures in SearchPage above) -- unsearchable by
+      // name, but still worth matching by number.
+      const name = r.program_name ?? "";
+      const number = r.program_number ?? "";
+      if (!name.toLowerCase().includes(q) && !number.toLowerCase().includes(q)) continue;
+      // Already-added programs are excluded here rather than shown
+      // checked -- they're already visible (and removable) in the
+      // "Selected programs" tray section below, so keeping them in this
+      // list too would just be the same program listed twice on screen.
+      if (isInProgramTray(r.portfolio, r.program_name)) continue;
+      const key = r.portfolio + "␟" + r.program_name;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      results.push(r);
+    }
+    return results.sort((a, b) => (a.program_name ?? "").localeCompare(b.program_name ?? ""));
+  });
+  let isSearchingPrograms = $derived(programQuery.trim().length >= PROGRAM_SEARCH_MIN_LENGTH);
+
+  function pickProgramDirect(row) {
+    selectedPortfolio = row.portfolio;
+    selectedAgency = row.agency;
+    selectedOutcomeNumber = row.outcome_number;
+    selectedProgramName = row.program_name;
+    programQuery = "";
+  }
+
   let portfolios = $derived([...new Set(hierarchy.map((r) => r.portfolio))].sort());
 
   let agencyOptions = $derived(
@@ -133,101 +180,140 @@
   {:else if error}
     <p class="status error">{error}</p>
   {:else}
-    {#if selectedPortfolio || selectedAgency || selectedOutcomeNumber != null}
-      <div class="breadcrumbs">
-        <button type="button" class="crumb" onclick={startOver}>Portfolio</button>
-        <span class="sep">›</span>
-        <button type="button" class="crumb" class:current={!selectedAgency} onclick={() => pickPortfolio(selectedPortfolio)}>
-          {selectedPortfolio}
-        </button>
-        {#if selectedAgency}
-          <span class="sep">›</span>
-          <button
-            type="button"
-            class="crumb"
-            class:current={selectedOutcomeNumber == null}
-            onclick={() => pickAgency(selectedAgency)}
-          >
-            {selectedAgency}
-          </button>
-        {/if}
-        {#if selectedOutcomeNumber != null}
-          <span class="sep">›</span>
-          <button
-            type="button"
-            class="crumb"
-            class:current={!selectedProgramName}
-            onclick={() => pickOutcome(selectedOutcomeNumber)}
-          >
-            Outcome {selectedOutcomeNumber}
-          </button>
-        {/if}
-        {#if selectedProgramRow}
-          <span class="sep">›</span>
-          <span class="crumb current">{selectedProgramRow.program_number} {selectedProgramRow.program_name}</span>
-        {/if}
-      </div>
-    {/if}
+    <div class="program-search">
+      <input
+        class="query"
+        type="text"
+        placeholder="Search programs by name or number…"
+        bind:value={programQuery}
+      />
+    </div>
 
-    {#if !selectedPortfolio}
-      <h3>Choose a portfolio</h3>
-      <div class="option-grid">
-        {#each portfolios as p}
-          <button type="button" class="option-card" onclick={() => pickPortfolio(p)}>{p}</button>
-        {/each}
-      </div>
-    {:else if !selectedAgency}
-      <h3>Choose an agency in {selectedPortfolio}</h3>
-      <div class="option-grid">
-        {#each agencyOptions as a}
-          <button type="button" class="option-card" onclick={() => pickAgency(a)}>{a}</button>
-        {/each}
-      </div>
-    {:else if selectedOutcomeNumber == null}
-      <h3>Choose an outcome for {selectedAgency}</h3>
-      <div class="option-list">
-        {#each outcomeOptions as o}
-          <button type="button" class="option-block" onclick={() => pickOutcome(o.outcome_number)}>
-            <span class="option-heading">Outcome {o.outcome_number}</span>
-            <span class="option-detail">{o.outcome_description}</span>
-          </button>
-        {/each}
-      </div>
-    {:else if !selectedProgramName}
-      <h3>Choose a program under Outcome {selectedOutcomeNumber}</h3>
-      {#if selectedOutcomeRow}
-        <p class="section-note">{selectedOutcomeRow.outcome_description}</p>
-      {/if}
-      <div class="option-list">
-        {#each programOptions as p}
-          <button type="button" class="option-block" onclick={() => pickProgram(p.program_name)}>
-            <span class="option-heading">{p.program_number} {p.program_name}</span>
-          </button>
-        {/each}
-      </div>
-    {:else}
-      <div class="confirm-block">
-        <p>
-          <strong>{selectedProgramRow.program_number} {selectedProgramRow.program_name}</strong>
-          <span class="confirm-portfolio">({selectedProgramRow.portfolio})</span>
-          {#if isInProgramTray(selectedProgramRow.portfolio, selectedProgramRow.program_name)}
-            <span class="already-added">✓ already added</span>
-          {/if}
-        </p>
-        <div class="confirm-actions">
-          <button
-            type="button"
-            class="add-btn"
-            disabled={isInProgramTray(selectedProgramRow.portfolio, selectedProgramRow.program_name)}
-            onclick={addProgram}
-          >
-            + Add this program
-          </button>
-          <button type="button" class="change-btn" onclick={() => pickOutcome(selectedOutcomeNumber)}>
-            Choose a different program
-          </button>
+    {#if isSearchingPrograms}
+      <p class="count">
+        {programSearchResults.length} program{programSearchResults.length === 1 ? "" : "s"}
+        {#if programSearchResults.length > PROGRAM_RESULT_CAP}
+          (showing first {PROGRAM_RESULT_CAP} — refine your search)
+        {/if}
+      </p>
+      {#if programSearchResults.length === 0}
+        <p class="status">No programs match.</p>
+      {:else}
+        <div class="option-list">
+          {#each programSearchResults.slice(0, PROGRAM_RESULT_CAP) as r (r.portfolio + "␟" + r.program_name)}
+            <div class="option-row">
+              <input
+                type="checkbox"
+                class="option-checkbox"
+                onclick={(e) => e.stopPropagation()}
+                onchange={() => addToProgramTray(r)}
+                aria-label={`Add ${r.program_name ?? "unnamed program"} (${r.portfolio}) to comparison`}
+              />
+              <button type="button" class="option-block" onclick={() => pickProgramDirect(r)}>
+                <span class="option-heading">{r.program_number} {r.program_name ?? "(unnamed program)"}</span>
+                <span class="option-detail">{r.portfolio} › {r.agency} › Outcome {r.outcome_number}</span>
+              </button>
+            </div>
+          {/each}
         </div>
-      </div>
+      {/if}
+    {:else}
+      {#if selectedPortfolio || selectedAgency || selectedOutcomeNumber != null}
+        <div class="breadcrumbs">
+          <button type="button" class="crumb" onclick={startOver}>Portfolio</button>
+          <span class="sep">›</span>
+          <button type="button" class="crumb" class:current={!selectedAgency} onclick={() => pickPortfolio(selectedPortfolio)}>
+            {selectedPortfolio}
+          </button>
+          {#if selectedAgency}
+            <span class="sep">›</span>
+            <button
+              type="button"
+              class="crumb"
+              class:current={selectedOutcomeNumber == null}
+              onclick={() => pickAgency(selectedAgency)}
+            >
+              {selectedAgency}
+            </button>
+          {/if}
+          {#if selectedOutcomeNumber != null}
+            <span class="sep">›</span>
+            <button
+              type="button"
+              class="crumb"
+              class:current={!selectedProgramName}
+              onclick={() => pickOutcome(selectedOutcomeNumber)}
+            >
+              Outcome {selectedOutcomeNumber}
+            </button>
+          {/if}
+          {#if selectedProgramRow}
+            <span class="sep">›</span>
+            <span class="crumb current">{selectedProgramRow.program_number} {selectedProgramRow.program_name}</span>
+          {/if}
+        </div>
+      {/if}
+
+      {#if !selectedPortfolio}
+        <h3>Choose a portfolio</h3>
+        <div class="option-grid">
+          {#each portfolios as p}
+            <button type="button" class="option-card" onclick={() => pickPortfolio(p)}>{p}</button>
+          {/each}
+        </div>
+      {:else if !selectedAgency}
+        <h3>Choose an agency in {selectedPortfolio}</h3>
+        <div class="option-grid">
+          {#each agencyOptions as a}
+            <button type="button" class="option-card" onclick={() => pickAgency(a)}>{a}</button>
+          {/each}
+        </div>
+      {:else if selectedOutcomeNumber == null}
+        <h3>Choose an outcome for {selectedAgency}</h3>
+        <div class="option-list">
+          {#each outcomeOptions as o}
+            <button type="button" class="option-block" onclick={() => pickOutcome(o.outcome_number)}>
+              <span class="option-heading">Outcome {o.outcome_number}</span>
+              <span class="option-detail">{o.outcome_description}</span>
+            </button>
+          {/each}
+        </div>
+      {:else if !selectedProgramName}
+        <h3>Choose a program under Outcome {selectedOutcomeNumber}</h3>
+        {#if selectedOutcomeRow}
+          <p class="section-note">{selectedOutcomeRow.outcome_description}</p>
+        {/if}
+        <div class="option-list">
+          {#each programOptions as p}
+            <button type="button" class="option-block" onclick={() => pickProgram(p.program_name)}>
+              <span class="option-heading">{p.program_number} {p.program_name}</span>
+            </button>
+          {/each}
+        </div>
+      {:else}
+        <div class="confirm-block">
+          <p>
+            <strong>{selectedProgramRow.program_number} {selectedProgramRow.program_name}</strong>
+            <span class="confirm-portfolio">({selectedProgramRow.portfolio})</span>
+            {#if isInProgramTray(selectedProgramRow.portfolio, selectedProgramRow.program_name)}
+              <span class="already-added">✓ already added</span>
+            {/if}
+          </p>
+          <div class="confirm-actions">
+            <button
+              type="button"
+              class="add-btn"
+              disabled={isInProgramTray(selectedProgramRow.portfolio, selectedProgramRow.program_name)}
+              onclick={addProgram}
+            >
+              + Add this program
+            </button>
+            <button type="button" class="change-btn" onclick={() => pickOutcome(selectedOutcomeNumber)}>
+              Choose a different program
+            </button>
+          </div>
+        </div>
+      {/if}
     {/if}
 
     {#if programTray.length > 0}
@@ -272,6 +358,28 @@
 <style>
   .program-picker {
     margin-bottom: 1rem;
+  }
+  .program-search {
+    margin-bottom: 0.75rem;
+  }
+  .query {
+    width: 100%;
+    font: inherit;
+    font-size: 0.95rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text);
+  }
+  .query:focus {
+    outline: 2px solid var(--text-h);
+    outline-offset: -1px;
+  }
+  .count {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin: 0 0 0.6rem;
   }
   .breadcrumbs {
     display: flex;
@@ -363,6 +471,21 @@
   .option-block:hover {
     border-color: var(--text-muted);
     background: var(--surface-accent);
+  }
+  .option-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .option-row .option-block {
+    flex: 1;
+    min-width: 0;
+  }
+  .option-checkbox {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
   }
   .option-heading {
     font-size: 0.88rem;

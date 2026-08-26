@@ -1,6 +1,7 @@
 <script>
   import * as d3 from "d3";
   import { formatDollars } from "./format.js";
+  import { adjustAmount, isInflationAdjustEnabled, CURRENT_FY } from "./inflation.svelte.js";
 
   let { impacts } = $props();
 
@@ -11,7 +12,7 @@
 
   const width = 640;
   const height = 320;
-  const margin = { top: 24, right: 16, bottom: 36, left: 64 };
+  const margin = { top: 24, right: 16, bottom: 52, left: 64 };
 
   let hovered = $state(null);
 
@@ -20,7 +21,7 @@
   let grouped = $derived.by(() => {
     const byYear = d3.rollup(
       impacts,
-      (rows) => d3.sum(rows, (r) => r.amount_thousands),
+      (rows) => d3.sum(rows, (r) => adjustAmount(r.amount_thousands, r.fiscal_year)),
       (r) => r.fiscal_year,
       (r) => r.direction,
     );
@@ -72,6 +73,9 @@
 </script>
 
 <div class="chart-wrap">
+  {#if isInflationAdjustEnabled()}
+    <span class="inflation-badge">Adjusted to {CURRENT_FY} dollars</span>
+  {/if}
   <svg viewBox="0 0 {width} {height}" role="img" aria-label="Financial profile by fiscal year">
     <line
       x1={margin.left}
@@ -103,7 +107,13 @@
     {/each}
 
     {#each grouped.fiscalYears as fy}
-      <text x={scales.x(fy)} y={height - margin.bottom + 18} text-anchor="middle" class="axis-label">
+      <text
+        x={scales.x(fy)}
+        y={height - margin.bottom + 10}
+        text-anchor="end"
+        transform={`rotate(-45 ${scales.x(fy)} ${height - margin.bottom + 10})`}
+        class="axis-label"
+      >
         {fy}
       </text>
     {/each}
@@ -145,6 +155,17 @@
   svg {
     width: 100%;
     height: auto;
+  }
+  .inflation-badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #0f766e;
+    background: #ecfdf5;
+    border: 1px solid #99f6e4;
+    border-radius: 999px;
+    padding: 0.15rem 0.6rem;
+    margin-bottom: 0.4rem;
   }
   .axis-label {
     font-size: 11px;

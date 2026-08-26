@@ -1,15 +1,32 @@
 <script>
   import * as d3 from "d3";
-  import { fetchProgramEstimateHistory } from "./api.js";
+  import { fetchProgramEstimateHistory, fetchRelatedPrograms } from "./api.js";
   import { formatDollars } from "./format.js";
+  import { adjustAmount, isInflationAdjustEnabled, CURRENT_FY } from "./inflation.svelte.js";
 
-  // programName: a single program's stable cross-year identity (see
-  // program_profile()'s own docstring for why this alone, unscoped by
-  // portfolio/agency, is the right key -- program_estimate_history()
-  // mirrors it exactly).
-  let { programName } = $props();
+  // programName + portfolio: a single program's stable identity within
+  // one portfolio era (see program_estimate_history()'s own docstring
+  // for why portfolio -- unlike agency -- is part of the key: the same
+  // name can mean a genuinely different program under a different
+  // portfolio, e.g. a machinery-of-government transfer).
+  // onViewPrograms: same callback App.svelte already passes to
+  // ProgramPicker's own "Summarise" flow -- the "combine" suggestion
+  // below reuses that exact multi-program comparison page rather than
+  // building a second way to view more than one program at once.
+  let { programName, portfolio, onViewPrograms } = $props();
 
-  let estimatePromise = $derived(fetchProgramEstimateHistory(programName));
+  let estimatePromise = $derived(fetchProgramEstimateHistory(programName, portfolio));
+  // Independent of estimatePromise (a missing/empty related list is the
+  // common case, not an error worth failing the whole page over) --
+  // never blocks or fails the main chart if this lookup has an issue.
+  let relatedPromise = $derived(fetchRelatedPrograms(programName, portfolio));
+
+  function combineWithRelated(related) {
+    onViewPrograms([
+      { program_name: programName, portfolio },
+      ...related.map((r) => ({ program_name: r.program_name, portfolio: r.portfolio })),
+    ]);
+  }
 
   // Vintage lines are ordered/sequential (which Budget round), not an
   // unordered category -- a fixed categorical hue set (capped ~8) would
@@ -26,11 +43,16 @@
 
   const width = 760;
   const height = 380;
-  const margin = { top: 24, right: 16, bottom: 36, left: 68 };
+  const margin = { top: 24, right: 16, bottom: 52, left: 68 };
 
   let hovered = $state(null);
 
-  function buildChart(vintages, actualSeries) {
+  function buildChart(rawVintages, rawActualSeries) {
+    const adjustSeries = (series) =>
+      series.map((d) => ({ ...d, amount_thousands: adjustAmount(d.amount_thousands, d.fiscal_year) }));
+    const vintages = rawVintages.map((v) => ({ ...v, series: adjustSeries(v.series) }));
+    const actualSeries = adjustSeries(rawActualSeries);
+
     const fiscalYears = [
       ...new Set([
         ...vintages.flatMap((v) => v.series.map((d) => d.fiscal_year)),
@@ -80,11 +102,28 @@
     <p class="status">Loading…</p>
   {:then data}
     <header>
-      <h1>{data.program_name}</h1>
+      <h1>{data.program_name} <span class="header-portfolio">({data.portfolio})</span></h1>
       {#if data.outcome_description}
         <p class="section-note">Outcome {data.outcome_number}: {data.outcome_description}</p>
       {/if}
     </header>
+
+    {#await relatedPromise then relatedData}
+      {#if relatedData.related.length > 0}
+        <div class="related-box">
+          <p class="related-note">{relatedData.note}</p>
+          <p class="related-list">
+            {#each relatedData.related as r, i (r.program_name)}
+              {i > 0 ? " and " : ""}<strong>{r.program_name}</strong>
+              <span class="related-range">({r.earliest_edition} – {r.latest_edition})</span>
+            {/each}
+          </p>
+          <button class="combine-btn" onclick={() => combineWithRelated(relatedData.related)}>
+            Combine and compare
+          </button>
+        </div>
+      {/if}
+    {/await}
 
     <section>
       <h2>How the Budget's own estimate has moved with each round</h2>
@@ -98,6 +137,9 @@
       {:else}
         {@const c = buildChart(data.vintages, data.actual_series)}
         <div class="chart-wrap">
+          {#if isInflationAdjustEnabled()}
+            <span class="inflation-badge">Adjusted to {CURRENT_FY} dollars</span>
+          {/if}
           <svg viewBox="0 0 {width} {height}" role="img" aria-label="Budget estimate history for {data.program_name}">
             <line x1={margin.left} x2={width - margin.right} y1={c.y(0)} y2={c.y(0)} stroke="var(--border)" />
 
@@ -142,7 +184,13 @@
             {/each}
 
             {#each c.fiscalYears as fy}
-              <text x={c.x(fy)} y={height - margin.bottom + 18} text-anchor="middle" class="axis-label">{fy}</text>
+              <text
+                x={c.x(fy)}
+                y={height - margin.bottom + 10}
+                text-anchor="end"
+                transform={`rotate(-45 ${c.x(fy)} ${height - margin.bottom + 10})`}
+                class="axis-label"
+              >{fy}</text>
             {/each}
             {#each c.y.ticks(5) as tick}
               <text x={margin.left - 10} y={c.y(tick)} text-anchor="end" dominant-baseline="middle" class="axis-label">
@@ -192,10 +240,47 @@
     line-height: 1.3;
     margin: 0 0 0.5rem;
   }
+  .header-portfolio {
+    font-size: 1rem;
+    font-weight: 400;
+    color: var(--text-muted);
+  }
   .section-note {
     font-size: 0.82rem;
     color: var(--text-muted);
     margin: -0.4rem 0 1rem;
+  }
+  .related-box {
+    background: var(--surface-accent, var(--border-faint));
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.9rem 1.1rem;
+    margin: 0 0 2rem;
+  }
+  .related-note {
+    margin: 0 0 0.5rem;
+    font-size: 0.88rem;
+  }
+  .related-list {
+    margin: 0 0 0.75rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }
+  .related-range {
+    font-size: 0.8rem;
+  }
+  .combine-btn {
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 0.4rem 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-h);
+    cursor: pointer;
+  }
+  .combine-btn:hover {
+    border-color: var(--text-muted);
   }
   h2 {
     font-size: 1rem;
@@ -214,6 +299,17 @@
     width: 100%;
     height: auto;
     display: block;
+  }
+  .inflation-badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #0f766e;
+    background: #ecfdf5;
+    border: 1px solid #99f6e4;
+    border-radius: 999px;
+    padding: 0.15rem 0.6rem;
+    margin-bottom: 0.4rem;
   }
   .axis-label {
     font-size: 11px;

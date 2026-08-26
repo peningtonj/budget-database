@@ -2,6 +2,7 @@
   import * as d3 from "d3";
   import { fetchPortfolioProfile, fetchAgencyOutcomeProfile } from "./api.js";
   import { formatDollars } from "./format.js";
+  import { adjustAmount, isInflationAdjustEnabled, CURRENT_FY } from "./inflation.svelte.js";
 
   // mode 'portfolio': one line per agency in `portfolio` for `edition`'s year.
   // mode 'agency': one line per outcome in `agency` (within `portfolio`) for
@@ -31,12 +32,19 @@
 
   const width = 720;
   const height = 380;
-  const margin = { top: 24, right: 16, bottom: 36, left: 68 };
+  const margin = { top: 24, right: 16, bottom: 52, left: 68 };
 
   let hovered = $state(null);
   let isProjected = (d) => d.estimate_type !== "estimated_actual";
 
-  function buildChart(lines) {
+  function buildChart(rawLines) {
+    const lines = rawLines.map((l) => ({
+      ...l,
+      series: l.series.map((d) => ({
+        ...d,
+        amount_thousands: adjustAmount(d.amount_thousands, d.fiscal_year),
+      })),
+    }));
     const fiscalYears = [
       ...new Set(lines.flatMap((l) => l.series.map((d) => d.fiscal_year))),
     ].sort();
@@ -83,6 +91,9 @@
       <p class="status">No data.</p>
     {:else}
       {@const c = buildChart(lines)}
+      {#if isInflationAdjustEnabled()}
+        <span class="inflation-badge">Adjusted to {CURRENT_FY} dollars</span>
+      {/if}
       <svg
         viewBox="0 0 {width} {height}"
         role="img"
@@ -120,7 +131,13 @@
         {/each}
 
         {#each c.fiscalYears as fy}
-          <text x={c.x(fy)} y={height - margin.bottom + 18} text-anchor="middle" class="axis-label">{fy}</text>
+          <text
+            x={c.x(fy)}
+            y={height - margin.bottom + 10}
+            text-anchor="end"
+            transform={`rotate(-45 ${c.x(fy)} ${height - margin.bottom + 10})`}
+            class="axis-label"
+          >{fy}</text>
         {/each}
         {#each c.y.ticks(5) as tick}
           <text x={margin.left - 10} y={c.y(tick)} text-anchor="end" dominant-baseline="middle" class="axis-label">
@@ -157,6 +174,17 @@
   svg {
     width: 100%;
     height: auto;
+  }
+  .inflation-badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #0f766e;
+    background: #ecfdf5;
+    border: 1px solid #99f6e4;
+    border-radius: 999px;
+    padding: 0.15rem 0.6rem;
+    margin-bottom: 0.4rem;
   }
   .axis-label {
     font-size: 11px;

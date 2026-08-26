@@ -4,6 +4,7 @@
   import { fetchMeasuresByProgram, fetchProgramProfile } from "./api.js";
   import { removeFromProgramTray } from "./programTray.svelte.js";
   import { formatDollars, formatMillionsCell } from "./format.js";
+  import { adjustAmount, isInflationAdjustEnabled, CURRENT_FY } from "./inflation.svelte.js";
 
   // programSelections: a snapshot of the program tray's own
   // {program_name, portfolio} pairs at the moment "Summarise" was
@@ -18,6 +19,14 @@
 
   let currentSelections = $state(untrack(() => [...programSelections]));
 
+  // Off by default -- (program_name, portfolio) stays the identity
+  // everywhere unless the user explicitly opts into treating same-named
+  // programs across portfolios/outcomes as one. This is a purely
+  // display-side grouping (groupedProfiles/groupedPrograms below); it
+  // never touches the underlying data or the tray's own selections, so
+  // turning it back off always returns to exactly what was there before.
+  let combineSameName = $state(false);
+
   const PROGRAM_LINE_COLORS = [
     "#0f766e",
     "#7c3aed",
@@ -30,6 +39,19 @@
   ];
   const DIRECTION_LABEL = { payment: "Payments", receipt: "Related receipts" };
 
+  // (program_name, portfolio) is the identity everywhere on this page,
+  // not program_name alone -- the same name can mean two genuinely
+  // different things under two different portfolio eras (a machinery-
+  // of-government transfer, e.g. National Disability Insurance Scheme
+  // moving from Social Services to Health, Disability and Ageing at the
+  // 2026-27 Budget), and each needs its own independent measures list
+  // AND actuals profile, not one merged together. Matches programKey's
+  // "␟"-joined key used for the per-program sections' own {#each} key
+  // further down.
+  function programKey(p) {
+    return p.portfolio + "␟" + p.program_name;
+  }
+
   // One fetch per selected program (each is its own independent
   // "find every measure touching this program" query -- see
   // measures_by_program()'s own docstring) -- not batched into one
@@ -37,17 +59,9 @@
   // program's own reverse-index lookup is already a single fast call
   // once the server-side index is warm (see _build_program_reverse_index).
   //
-  // Once that resolves, fetch each distinct program_name's own actuals
+  // Once that resolves, fetch each selected program's own actuals
   // profile (program_profile()/fetchProgramProfile) -- the chart's own
-  // data source. Deliberately deduped by program_name ALONE, not the
-  // (program_name, portfolio) pair the measures fetch above uses: the
-  // same program can be selected twice under two different portfolio
-  // eras (see programTray.svelte.js), but it's still one continuous
-  // real program with one spending history, so it gets one actuals
-  // line, not two identical overlapping ones. program_profile() itself
-  // already stitches across portfolio/agency spelling changes over
-  // time (see its own docstring), so a plain program_name lookup is
-  // exactly the right key here.
+  // data source, keyed the same (program_name, portfolio) way.
   let dataPromise = $derived(
     Promise.all(
       currentSelections.map((sel) =>
@@ -58,15 +72,14 @@
         })),
       ),
     ).then(async (programs) => {
-      const distinctNames = [...new Set(programs.map((p) => p.program_name))];
       const profiles = await Promise.all(
-        distinctNames.map((name) => fetchProgramProfile(name).catch(() => null)),
+        programs.map((p) => fetchProgramProfile(p.program_name, p.portfolio).catch(() => null)),
       );
-      const profileByName = new Map();
-      distinctNames.forEach((name, i) => {
-        if (profiles[i]) profileByName.set(name, profiles[i]);
+      const profileByKey = new Map();
+      programs.forEach((p, i) => {
+        if (profiles[i]) profileByKey.set(programKey(p), profiles[i]);
       });
-      return { programs, profileByName };
+      return { programs, profileByKey };
     }),
   );
 
@@ -78,6 +91,92 @@
     if (currentSelections.length === 0) onBack();
   }
 
+  // Removes every portfolio a combined group covers, not just one --
+  // "× Remove" on a merged row/section has to drop the whole group from
+  // the tray, or the group would silently reappear (missing one of its
+  // own portfolios) the next time this page is opened.
+  function removeProgramGroup(program) {
+    for (const portfolio of program.portfolios) {
+      removeProgram(program.program_name, portfolio);
+    }
+  }
+
+  // True identity everywhere by default: one entry per (program_name,
+  // portfolio) selection, `portfolios` a singleton array. With the
+  // "Combine programs with the same name" toggle on, folds every
+  // profile sharing a program_name into one, summing $ by fiscal year --
+  // safe because a program only ever reports real figures under one
+  // portfolio/outcome in a given year (see program_estimate_history()'s
+  // own docstring on the Fishing Industry / outcome-renumbering case
+  // this exists for), so a combined year is really "whichever one
+  // reported it" rather than genuine double-counting. Deliberately a
+  // display-only regrouping -- it never touches program_profile()'s own
+  // (program_name, portfolio) identity or the tray's selections, so
+  // switching the toggle back off always returns to exactly what was
+  // there before.
+  function groupedProfiles(profileByKey, combine) {
+    const profiles = [...profileByKey.values()];
+    if (!combine) return profiles.map((p) => ({ ...p, portfolios: [p.portfolio] }));
+
+    const byName = new Map();
+    for (const p of profiles) {
+      const existing = byName.get(p.program_name);
+      if (!existing) {
+        byName.set(p.program_name, {
+          program_name: p.program_name,
+          portfolios: [p.portfolio],
+          series: p.series.map((d) => ({ ...d })),
+        });
+        continue;
+      }
+      existing.portfolios.push(p.portfolio);
+      const byFy = new Map(existing.series.map((d) => [d.fiscal_year, d]));
+      for (const d of p.series) {
+        const prev = byFy.get(d.fiscal_year);
+        byFy.set(d.fiscal_year, prev
+          ? {
+              ...prev,
+              amount_thousands: prev.amount_thousands + d.amount_thousands,
+              estimate_type: prev.estimate_type === "estimated_actual" ? prev.estimate_type : d.estimate_type,
+            }
+          : { ...d });
+      }
+      existing.series = [...byFy.values()].sort((a, b) => (a.fiscal_year > b.fiscal_year ? 1 : -1));
+    }
+    return [...byName.values()].map((g) => ({ ...g, portfolio: g.portfolios.join(", ") }));
+  }
+
+  // Same grouping, applied to the fetched (program, measures) list that
+  // drives the per-program sections further down -- merges each group's
+  // measures (deduped by measure_id, in case a single measure was
+  // somehow returned under both portfolio-scoped lookups) rather than
+  // its $ series.
+  function groupedPrograms(programs, combine) {
+    if (!combine) return programs.map((p) => ({ ...p, portfolios: [p.portfolio] }));
+
+    const byName = new Map();
+    for (const p of programs) {
+      const existing = byName.get(p.program_name);
+      if (!existing) {
+        byName.set(p.program_name, {
+          program_name: p.program_name,
+          portfolios: [p.portfolio],
+          measures: [...p.measures],
+        });
+        continue;
+      }
+      existing.portfolios.push(p.portfolio);
+      const seen = new Set(existing.measures.map((m) => m.measure_id));
+      for (const m of p.measures) {
+        if (!seen.has(m.measure_id)) {
+          existing.measures.push(m);
+          seen.add(m.measure_id);
+        }
+      }
+    }
+    return [...byName.values()].map((g) => ({ ...g, portfolio: g.portfolios.join(", ") }));
+  }
+
   function programImpactTable(program) {
     const allImpacts = program.measures.flatMap((m) => m.impacts);
     const fiscalYears = [...new Set(allImpacts.map((i) => i.fiscal_year))].sort();
@@ -85,7 +184,10 @@
     const rows = directions.map((direction) => {
       const directionRows = allImpacts.filter((i) => i.direction === direction);
       const cells = fiscalYears.map((fy) =>
-        d3.sum(directionRows.filter((r) => r.fiscal_year === fy), (r) => r.amount_thousands),
+        d3.sum(
+          directionRows.filter((r) => r.fiscal_year === fy),
+          (r) => adjustAmount(r.amount_thousands, r.fiscal_year),
+        ),
       );
       return { direction, cells };
     });
@@ -94,7 +196,7 @@
 
   const width = 720;
   const height = 340;
-  const margin = { top: 24, right: 16, bottom: 36, left: 68 };
+  const margin = { top: 24, right: 16, bottom: 52, left: 68 };
 
   let hovered = $state(null);
   let isProjected = (d) => d.estimate_type !== "estimated_actual";
@@ -104,8 +206,14 @@
   // segment + filled circle for reported actuals, dashed segment +
   // hollow circle for forward estimates -- the same convention
   // AgencyProgramChart.svelte uses for a program's own profile line.
-  function buildChart(profileByName) {
-    const profiles = [...profileByName.values()];
+  function buildChart(rawProfiles) {
+    const profiles = rawProfiles.map((p) => ({
+      ...p,
+      series: p.series.map((d) => ({
+        ...d,
+        amount_thousands: adjustAmount(d.amount_thousands, d.fiscal_year),
+      })),
+    }));
     const fiscalYears = [...new Set(profiles.flatMap((p) => p.series.map((d) => d.fiscal_year)))].sort();
     const x = d3
       .scalePoint()
@@ -118,7 +226,7 @@
     const y = d3.scaleLinear().domain([lo, hi]).nice().range([height - margin.bottom, margin.top]);
     const lineGen = d3.line().x((d) => x(d.fiscal_year)).y((d) => y(d.amount_thousands));
 
-    const lines = [...profileByName.entries()].map(([name, profile], i) => {
+    const lines = profiles.map((profile, i) => {
       const series = profile.series;
       const splitIndex = series.findIndex(isProjected);
       const segments =
@@ -129,10 +237,12 @@
               { dashed: true, path: lineGen(series.slice(Math.max(splitIndex - 1, 0))) },
             ];
       return {
-        label: name,
+        label: profile.program_name,
+        portfolio: profile.portfolio,
+        portfolios: profile.portfolios,
         color: PROGRAM_LINE_COLORS[i % PROGRAM_LINE_COLORS.length],
         segments,
-        points: series.map((d) => ({ ...d, series_label: name })),
+        points: series.map((d) => ({ ...d, series_label: profile.program_name })),
       };
     });
 
@@ -140,17 +250,27 @@
   }
 
   // Exact $m figures behind the chart's own lines -- one row per
-  // distinct program, same pairing convention as AgencyProgramChart's
-  // "Measure's own $ impact" table.
-  function programActualsTable(profileByName, fiscalYears) {
-    return [...profileByName.entries()].map(([name, profile]) => ({
-      name,
-      cells: fiscalYears.map((fy) => profile.series.find((d) => d.fiscal_year === fy)?.amount_thousands),
+  // selected (program, portfolio) (or one per combined group, when
+  // groupedProfiles has folded same-named programs together), same
+  // pairing convention as AgencyProgramChart's "Measure's own $ impact"
+  // table.
+  function programActualsTable(profiles, fiscalYears) {
+    return profiles.map((profile) => ({
+      name: profile.program_name,
+      portfolio: profile.portfolio,
+      portfolios: profile.portfolios,
+      cells: fiscalYears.map((fy) => {
+        const point = profile.series.find((d) => d.fiscal_year === fy);
+        return point ? adjustAmount(point.amount_thousands, fy) : undefined;
+      }),
     }));
   }
 
   function directionTotal(impacts, direction) {
-    return d3.sum(impacts.filter((i) => i.direction === direction), (i) => i.amount_thousands);
+    return d3.sum(
+      impacts.filter((i) => i.direction === direction),
+      (i) => adjustAmount(i.amount_thousands, i.fiscal_year),
+    );
   }
 </script>
 
@@ -159,26 +279,43 @@
     <p class="status">Loading…</p>
   {:then data}
     {@const programs = data.programs}
-    {@const profileByName = data.profileByName}
+    {@const profileByKey = data.profileByKey}
+    {@const hasSameNamedPortfolios = new Set(programs.map((p) => p.program_name)).size < programs.length}
     <header>
       <h1>Summarising {programs.length} program{programs.length === 1 ? "" : "s"}</h1>
       <p class="section-note">
         Each program's own actual and budgeted spending history, as reported in the Budget papers.
-        Every measure touching each selected program is listed further down.
-        {#if profileByName.size < programs.length}
-          Two or more selections share the same underlying program across different portfolio eras,
-          so they're shown as a single continuous line below.
-        {/if}
+        Every measure touching each selected program is listed further down. Two selections with
+        the same name under different portfolios (a machinery-of-government transfer, e.g. a
+        program that moved portfolios) are shown as separate lines, each scoped to its own portfolio,
+        unless combined below.
       </p>
+      {#if hasSameNamedPortfolios}
+        <label class="combine-toggle">
+          <input type="checkbox" bind:checked={combineSameName} />
+          Combine programs with the same name
+        </label>
+        <p class="section-note combine-note">
+          Some of your selected programs share a name across different portfolios or outcomes.
+          Turn this on to treat them as one program that's simply moved -- your own call, not a
+          change to the underlying Budget data.
+        </p>
+      {/if}
     </header>
+
+    {@const displayProfiles = groupedProfiles(profileByKey, combineSameName)}
+    {@const displayPrograms = groupedPrograms(programs, combineSameName)}
 
     <section>
       <h2>Program actuals</h2>
-      {#if profileByName.size === 0}
+      {#if displayProfiles.length === 0}
         <p class="status">No actuals data found for any of the selected programs.</p>
       {:else}
-        {@const c = buildChart(profileByName)}
+        {@const c = buildChart(displayProfiles)}
         <div class="chart-wrap">
+          {#if isInflationAdjustEnabled()}
+            <span class="inflation-badge">Adjusted to {CURRENT_FY} dollars</span>
+          {/if}
           <svg viewBox="0 0 {width} {height}" role="img" aria-label="Actual and budgeted spending per selected program">
             <line x1={margin.left} x2={width - margin.right} y1={c.y(0)} y2={c.y(0)} stroke="var(--border)" />
             {#each c.lines as line}
@@ -210,7 +347,13 @@
               {/each}
             {/each}
             {#each c.fiscalYears as fy}
-              <text x={c.x(fy)} y={height - margin.bottom + 18} text-anchor="middle" class="axis-label">{fy}</text>
+              <text
+                x={c.x(fy)}
+                y={height - margin.bottom + 10}
+                text-anchor="end"
+                transform={`rotate(-45 ${c.x(fy)} ${height - margin.bottom + 10})`}
+                class="axis-label"
+              >{fy}</text>
             {/each}
             {#each c.y.ticks(5) as tick}
               <text x={margin.left - 10} y={c.y(tick)} text-anchor="end" dominant-baseline="middle" class="axis-label">
@@ -222,9 +365,15 @@
             {#each c.lines as line}
               <span class="legend-item">
                 <span class="swatch" style="background: {line.color}"></span>
-                <button type="button" class="legend-link" onclick={() => onDeepDive(line.label)}>
-                  {line.label}
-                </button>
+                {#if line.portfolios.length > 1}
+                  <span class="legend-name">{line.label}</span>
+                  <span class="legend-portfolio">(combined: {line.portfolio})</span>
+                {:else}
+                  <button type="button" class="legend-link" onclick={() => onDeepDive(line.label, line.portfolio)}>
+                    {line.label}
+                  </button>
+                  <span class="legend-portfolio">({line.portfolio})</span>
+                {/if}
               </span>
             {/each}
           </div>
@@ -238,7 +387,7 @@
           {/if}
         </div>
 
-        {@const table = programActualsTable(profileByName, c.fiscalYears)}
+        {@const table = programActualsTable(displayProfiles, c.fiscalYears)}
         <table class="program-impact actuals-table">
           <thead>
             <tr>
@@ -251,7 +400,12 @@
           <tbody>
             {#each table as row}
               <tr>
-                <td>{row.name} ($m)</td>
+                <td>
+                  {row.name}
+                  <span class="table-portfolio" title={row.portfolios.length > 1 ? row.portfolio : undefined}>
+                    ({row.portfolios.length > 1 ? "combined" : row.portfolio})
+                  </span> ($m)
+                </td>
                 {#each row.cells as cell}
                   <td class="num">{cell === undefined ? "-" : formatMillionsCell(cell)}</td>
                 {/each}
@@ -262,14 +416,19 @@
       {/if}
     </section>
 
-    {#each programs as program (program.portfolio + '␟' + program.program_name)}
+    {#each displayPrograms as program (program.portfolio + '␟' + program.program_name)}
       <section class="program-section">
         <div class="program-heading">
-          <h2>{program.program_name} <span class="section-portfolio">({program.portfolio})</span></h2>
+          <h2>
+            {program.program_name}
+            <span class="section-portfolio">
+              ({program.portfolios.length > 1 ? `combined: ${program.portfolio}` : program.portfolio})
+            </span>
+          </h2>
           <button
             type="button"
             class="remove"
-            onclick={() => removeProgram(program.program_name, program.portfolio)}
+            onclick={() => removeProgramGroup(program)}
             aria-label={`Remove ${program.program_name} (${program.portfolio})`}
           >
             × Remove
@@ -352,6 +511,19 @@
     color: var(--text-muted);
     margin: -0.4rem 0 1rem;
   }
+  .combine-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-h);
+    cursor: pointer;
+    margin-bottom: 0.3rem;
+  }
+  .combine-note {
+    margin-top: 0;
+  }
   h2 {
     font-size: 1rem;
     text-transform: uppercase;
@@ -370,6 +542,17 @@
     height: auto;
     display: block;
   }
+  .inflation-badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #0f766e;
+    background: #ecfdf5;
+    border: 1px solid #99f6e4;
+    border-radius: 999px;
+    padding: 0.15rem 0.6rem;
+    margin-bottom: 0.4rem;
+  }
   .axis-label {
     font-size: 11px;
     fill: var(--text-muted);
@@ -386,6 +569,17 @@
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
+  }
+  .legend-portfolio {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+  .legend-name {
+    color: var(--text-h);
+  }
+  .table-portfolio {
+    font-weight: 400;
+    color: var(--text-muted);
   }
   .swatch {
     width: 10px;

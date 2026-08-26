@@ -4,6 +4,7 @@
   import { fetchMeasureCombined } from "./api.js";
   import { removeFromTray } from "./measureTray.svelte.js";
   import { formatDollars, formatMillionsCell } from "./format.js";
+  import { adjustAmount } from "./inflation.svelte.js";
   import AgencyProgramChart from "./AgencyProgramChart.svelte";
   import CombinedProgramsTouched from "./CombinedProgramsTouched.svelte";
 
@@ -33,7 +34,7 @@
   // has one number to show. The full payment/receipt breakdown by
   // fiscal year is still available on the measure's own page.
   function totalImpact(impacts) {
-    return d3.sum(impacts, (i) => i.amount_thousands);
+    return d3.sum(impacts, (i) => adjustAmount(i.amount_thousands, i.fiscal_year));
   }
 
   const DIRECTION_LABEL = { payment: "Payments", receipt: "Related receipts" };
@@ -48,7 +49,10 @@
     const rows = directions.map((direction) => {
       const directionRows = allImpacts.filter((i) => i.direction === direction);
       const cells = fiscalYears.map((fy) =>
-        d3.sum(directionRows.filter((r) => r.fiscal_year === fy), (r) => r.amount_thousands),
+        d3.sum(
+          directionRows.filter((r) => r.fiscal_year === fy),
+          (r) => adjustAmount(r.amount_thousands, r.fiscal_year),
+        ),
       );
       return { direction, cells };
     });
@@ -63,7 +67,7 @@
   function dominantAgency(allImpacts) {
     const byAgency = d3.rollup(
       allImpacts,
-      (v) => d3.sum(v, (i) => i.amount_thousands),
+      (v) => d3.sum(v, (i) => adjustAmount(i.amount_thousands, i.fiscal_year)),
       (i) => i.agency,
     );
     let best = null;

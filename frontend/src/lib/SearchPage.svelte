@@ -4,7 +4,7 @@
   import ProgramPicker from "./ProgramPicker.svelte";
   import { tray, isInTray, toggleInTray, addToTray, clearTray } from "./measureTray.svelte.js";
 
-  let { onselect, onViewSet, onViewPrograms } = $props();
+  let { onselect, onViewSet, onViewPrograms, onViewAudit } = $props();
 
   const MIN_TO_SUMMARISE = 2;
 
@@ -214,19 +214,22 @@
     </div>
   </header>
 
-  <div class="mode-toggle">
-    <button class:active={mode === "name"} onclick={() => (mode = "name")}>
-      Measure name
-    </button>
-    <button class:active={mode === "text"} onclick={() => (mode = "text")}>
-      Measure text
-    </button>
-    <button class:active={mode === "topic"} onclick={() => (mode = "topic")}>
-      Topic
-    </button>
-    <button class:active={mode === "program"} onclick={() => (mode = "program")}>
-      By program
-    </button>
+  <div class="mode-row">
+    <div class="mode-toggle">
+      <button class:active={mode === "name"} onclick={() => (mode = "name")}>
+        Measure name
+      </button>
+      <button class:active={mode === "text"} onclick={() => (mode = "text")}>
+        Measure text
+      </button>
+      <button class:active={mode === "topic"} onclick={() => (mode = "topic")}>
+        Topic
+      </button>
+      <button class:active={mode === "program"} onclick={() => (mode = "program")}>
+        By program
+      </button>
+    </div>
+    <button class="audit-link" onclick={onViewAudit}>Program data audit →</button>
   </div>
 
   {#if mode === "program"}
@@ -421,14 +424,34 @@
     color: var(--text-muted);
     margin: 0;
   }
+  .mode-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+  }
   .mode-toggle {
     display: inline-flex;
     gap: 0.2rem;
     padding: 0.2rem;
-    margin-bottom: 0.75rem;
     border: 1px solid var(--border);
     border-radius: 8px;
     background: var(--surface-accent);
+  }
+  .audit-link {
+    font: inherit;
+    font-size: 0.8rem;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .audit-link:hover {
+    color: var(--text-h);
+    text-decoration: underline;
   }
   .mode-toggle button {
     font: inherit;

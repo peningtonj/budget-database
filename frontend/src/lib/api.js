@@ -27,13 +27,20 @@ export async function fetchMeasureDetail(name, edition) {
   return res.json();
 }
 
-export async function fetchProgramProfile(programName) {
+// portfolio is required, not just program_name: the same program name
+// can legitimately mean two different things under two different
+// portfolio eras (a machinery-of-government transfer, e.g. National
+// Disability Insurance Scheme moving from Social Services to Health,
+// Disability and Ageing at the 2026-27 Budget), and each needs its own
+// independent profile -- see program_profile()'s own docstring.
+export async function fetchProgramProfile(programName, portfolio) {
   const url = new URL(`${API_BASE}/measures/program-profile/`);
   url.searchParams.set("program_name", programName);
+  url.searchParams.set("portfolio", portfolio);
 
   const res = await fetch(url);
   if (res.status === 404) {
-    throw new Error(`No program profile found for "${programName}"`);
+    throw new Error(`No program profile found for "${programName}" (${portfolio})`);
   }
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
@@ -46,14 +53,32 @@ export async function fetchProgramProfile(programName) {
 // program_estimate_history()'s own docstring), plus the realised
 // actual_series -- ProgramDeepDivePage's own chart data, showing how
 // the Budget's own forecast for this program has moved with each round.
-export async function fetchProgramEstimateHistory(programName) {
+// portfolio required for the same reason fetchProgramProfile's is.
+export async function fetchProgramEstimateHistory(programName, portfolio) {
   const url = new URL(`${API_BASE}/measures/program-estimate-history/`);
   url.searchParams.set("program_name", programName);
+  url.searchParams.set("portfolio", portfolio);
 
   const res = await fetch(url);
   if (res.status === 404) {
-    throw new Error(`No estimate history found for "${programName}"`);
+    throw new Error(`No estimate history found for "${programName}" (${portfolio})`);
   }
+  if (!res.ok) {
+    throw new Error(`Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+// Curated "these might be the same program under a different name" list
+// (see backend/measures/related_programs.py) -- ProgramDeepDivePage's
+// suggestion box. Empty related list is the common case (most programs
+// aren't part of any known succession), not an error.
+export async function fetchRelatedPrograms(programName, portfolio) {
+  const url = new URL(`${API_BASE}/measures/related-programs/`);
+  url.searchParams.set("program_name", programName);
+  url.searchParams.set("portfolio", portfolio);
+
+  const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
   }
@@ -201,6 +226,20 @@ export async function fetchMeasureCombined(ids) {
 // rows, no need for four separate round trips per pick).
 export async function fetchProgramHierarchy() {
   const res = await fetch(`${API_BASE}/measures/program-hierarchy/`);
+  if (!res.ok) {
+    throw new Error(`Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+// Every (outcome_number, program_name) combination across every ingested
+// edition, portfolio/agency spellings folded together with one
+// estimated_actual figure per year -- ProgramOutcomeAuditPage's manual
+// data-quality review table. See program_outcome_audit()'s own docstring
+// for why this groups differently (and more broadly) than every other
+// program fetch here.
+export async function fetchProgramOutcomeAudit() {
+  const res = await fetch(`${API_BASE}/measures/program-outcome-audit/`);
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
   }

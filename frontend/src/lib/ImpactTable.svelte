@@ -1,5 +1,6 @@
 <script>
   import { formatMillionsCell } from "./format.js";
+  import { adjustAmount } from "./inflation.svelte.js";
 
   let { impacts } = $props();
 
@@ -20,11 +21,10 @@
       const agencies = [...new Set(rows.map((r) => r.agency))].sort();
       const matrix = agencies.map((agency) => ({
         agency,
-        cells: fiscalYears.map(
-          (fy) =>
-            rows.find((r) => r.agency === agency && r.fiscal_year === fy)
-              ?.amount_thousands ?? 0,
-        ),
+        cells: fiscalYears.map((fy) => {
+          const row = rows.find((r) => r.agency === agency && r.fiscal_year === fy);
+          return row ? adjustAmount(row.amount_thousands, fy) : 0;
+        }),
       }));
       const totals = fiscalYears.map((_, idx) =>
         matrix.reduce((sum, row) => sum + row.cells[idx], 0),

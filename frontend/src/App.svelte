@@ -5,7 +5,9 @@
   import CombinedMeasuresPage from "./lib/CombinedMeasuresPage.svelte";
   import ProgramMeasuresPage from "./lib/ProgramMeasuresPage.svelte";
   import ProgramDeepDivePage from "./lib/ProgramDeepDivePage.svelte";
+  import ProgramOutcomeAuditPage from "./lib/ProgramOutcomeAuditPage.svelte";
   import { resolveMeasureId } from "./lib/api.js";
+  import { isInflationAdjustEnabled, toggleInflationAdjust, CURRENT_FY } from "./lib/inflation.svelte.js";
 
   const DEFAULT_TITLE = document.title;
 
@@ -68,8 +70,12 @@
     viewStack.push({ type: "programs", selections });
   }
 
-  function viewProgramDeepDive(programName) {
-    viewStack.push({ type: "deepDive", programName });
+  function viewProgramDeepDive(programName, portfolio) {
+    viewStack.push({ type: "deepDive", programName, portfolio });
+  }
+
+  function viewAudit() {
+    viewStack.push({ type: "audit" });
   }
 
   // Pops exactly one level -- the single back button used everywhere.
@@ -96,6 +102,7 @@
     if (!prev) return "search";
     if (prev.type === "measure") return prev.name;
     if (prev.type === "deepDive") return "program history";
+    if (prev.type === "audit") return "data audit";
     return "summary";
   }
 
@@ -109,6 +116,22 @@
     document.title = currentView?.type === "measure" ? `${currentView.name} — ${DEFAULT_TITLE}` : DEFAULT_TITLE;
   });
 </script>
+
+<div class="inflation-bar">
+  <label class="inflation-toggle">
+    <span class="switch" class:on={isInflationAdjustEnabled()}>
+      <input type="checkbox" checked={isInflationAdjustEnabled()} onchange={toggleInflationAdjust} />
+      <span class="switch-knob"></span>
+    </span>
+    Show in {CURRENT_FY} dollars
+  </label>
+  {#if isInflationAdjustEnabled()}
+    <span class="inflation-note">
+      Adjusted for inflation using the GDP deflator (ABS realised data through 2024-25, Treasury's
+      own Budget Paper No. 1 forecast beyond) -- not shown on the data audit page.
+    </span>
+  {/if}
+</div>
 
 {#if resolving}
   <p class="status">Loading…</p>
@@ -154,7 +177,15 @@
     {/key}
   {:else if currentView?.type === "deepDive"}
     {#key currentView}
-      <ProgramDeepDivePage programName={currentView.programName} />
+      <ProgramDeepDivePage
+        programName={currentView.programName}
+        portfolio={currentView.portfolio}
+        onViewPrograms={viewPrograms}
+      />
+    {/key}
+  {:else if currentView?.type === "audit"}
+    {#key currentView}
+      <ProgramOutcomeAuditPage />
     {/key}
   {/if}
 
@@ -167,7 +198,12 @@
        lose that state -- this is the one view that's deliberately NOT
        remounted. -->
   <div class:hidden={!!currentView}>
-    <SearchPage onselect={selectMeasure} onViewSet={viewSet} onViewPrograms={viewPrograms} />
+    <SearchPage
+      onselect={selectMeasure}
+      onViewSet={viewSet}
+      onViewPrograms={viewPrograms}
+      onViewAudit={viewAudit}
+    />
   </div>
 {/if}
 
@@ -192,6 +228,62 @@
   }
   .hidden {
     display: none;
+  }
+  .inflation-bar {
+    max-width: 1280px;
+    margin: 0.75rem auto 0;
+    padding: 0 1.5rem;
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.75rem;
+    font-size: 0.82rem;
+  }
+  .inflation-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+    color: var(--text-h);
+    cursor: pointer;
+  }
+  .switch {
+    position: relative;
+    display: inline-block;
+    width: 34px;
+    height: 20px;
+    flex-shrink: 0;
+    border-radius: 999px;
+    background: var(--border);
+    transition: background 0.15s;
+  }
+  .switch.on {
+    background: #0f766e;
+  }
+  .switch input {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+  .switch-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--surface);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    transition: transform 0.15s;
+    pointer-events: none;
+  }
+  .switch.on .switch-knob {
+    transform: translateX(14px);
+  }
+  .inflation-note {
+    color: var(--text-muted);
   }
   .status {
     padding: 3rem 0;

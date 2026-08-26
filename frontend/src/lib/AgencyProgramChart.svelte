@@ -2,6 +2,7 @@
   import * as d3 from "d3";
   import { fetchProgramProfile } from "./api.js";
   import { formatDollars, formatMillionsCell } from "./format.js";
+  import { adjustAmount, isInflationAdjustEnabled, CURRENT_FY } from "./inflation.svelte.js";
 
   // defaultAgency: which agency's programs to show first (e.g. the
   // agency that received the largest combined $ across a selected set
@@ -64,7 +65,7 @@
   let profilesPromise = $derived(
     Promise.all(
       agencyPrograms.map((p) =>
-        fetchProgramProfile(p.program_name).catch(() => null),
+        fetchProgramProfile(p.program_name, p.portfolio).catch(() => null),
       ),
     ).then((results) => results.filter(Boolean)),
   );
@@ -75,7 +76,7 @@
 
   const width = 720;
   const height = 360;
-  const margin = { top: 24, right: 16, bottom: 36, left: 68 };
+  const margin = { top: 24, right: 16, bottom: 52, left: 68 };
 
   let hovered = $state(null);
   let isProjected = (d) => d.estimate_type !== "estimated_actual";
@@ -89,7 +90,14 @@
   // (measure_impacts already has one row per agency/direction/fiscal_
   // year), but required once several measures' own rows can share a
   // (direction, fiscal_year), as they can on the combined-measures page.
-  function buildChart(profiles, measureRows) {
+  function buildChart(rawProfiles, measureRows) {
+    const profiles = rawProfiles.map((p) => ({
+      ...p,
+      series: p.series.map((d) => ({
+        ...d,
+        amount_thousands: adjustAmount(d.amount_thousands, d.fiscal_year),
+      })),
+    }));
     const fiscalYears = [
       ...new Set([
         ...profiles.flatMap((p) => p.series.map((d) => d.fiscal_year)),
@@ -107,7 +115,7 @@
     const summed = directions.map((direction) => {
       const byYear = d3.rollup(
         measureRows.filter((d) => d.direction === direction),
-        (rows) => d3.sum(rows, (d) => d.amount_thousands),
+        (rows) => d3.sum(rows, (d) => adjustAmount(d.amount_thousands, d.fiscal_year)),
         (d) => d.fiscal_year,
       );
       const points = [...byYear.entries()]
@@ -140,6 +148,7 @@
             ];
       return {
         program_name: p.program_name,
+        portfolio: p.portfolio,
         color: PROGRAM_COLORS[i % PROGRAM_COLORS.length],
         segments,
         points: series.map((d) => ({ ...d, series_label: p.program_name })),
@@ -223,6 +232,9 @@
   {:then profiles}
     {@const c = buildChart(profiles, measureSeries)}
     <div class="chart-wrap">
+      {#if isInflationAdjustEnabled()}
+        <span class="inflation-badge">Adjusted to {CURRENT_FY} dollars</span>
+      {/if}
       <svg viewBox="0 0 {width} {height}" role="img" aria-label="Program and measure profiles for {selectedAgency}">
         <line x1={margin.left} x2={width - margin.right} y1={c.y(0)} y2={c.y(0)} stroke="var(--border)" />
 
@@ -278,7 +290,13 @@
         {/each}
 
         {#each c.fiscalYears as fy}
-          <text x={c.x(fy)} y={height - margin.bottom + 18} text-anchor="middle" class="axis-label">{fy}</text>
+          <text
+            x={c.x(fy)}
+            y={height - margin.bottom + 10}
+            text-anchor="end"
+            transform={`rotate(-45 ${c.x(fy)} ${height - margin.bottom + 10})`}
+            class="axis-label"
+          >{fy}</text>
         {/each}
         {#each c.y.ticks(5) as tick}
           <text x={margin.left - 10} y={c.y(tick)} text-anchor="end" dominant-baseline="middle" class="axis-label">
@@ -292,7 +310,7 @@
           <span class="legend-item">
             <span class="swatch" style="background: {line.color}"></span>
             {#if onDeepDive}
-              <button type="button" class="legend-link" onclick={() => onDeepDive(line.program_name)}>
+              <button type="button" class="legend-link" onclick={() => onDeepDive(line.program_name, line.portfolio)}>
                 {line.program_name}
               </button>
             {:else}
@@ -374,6 +392,17 @@
     width: 100%;
     height: auto;
     display: block;
+  }
+  .inflation-badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #0f766e;
+    background: #ecfdf5;
+    border: 1px solid #99f6e4;
+    border-radius: 999px;
+    padding: 0.15rem 0.6rem;
+    margin-bottom: 0.4rem;
   }
   .panel-heading {
     font-size: 0.78rem;
