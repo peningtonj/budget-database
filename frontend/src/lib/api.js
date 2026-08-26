@@ -6,6 +6,36 @@
 // "https://budget-api.onrender.com/api" -- see render.yaml.
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000/api";
 
+// fetch() itself throws (a "Failed to fetch" TypeError, before any HTTP
+// response even exists) on things like a dropped connection, a DNS
+// blip, or -- the common case on Render's free tier -- the backend
+// still spinning up from a cold start when the very first request
+// after a period of inactivity lands. That's worth a short, bounded
+// retry with backoff; an actual HTTP response (even a 4xx/5xx) is
+// returned as-is on the first try and left to each caller's own status
+// handling below, since that's a real answer from the server, not a
+// transient failure to reach it at all.
+const RETRY_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 500;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithRetry(input, options = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetch(input, options);
+    } catch (err) {
+      // An aborted request (e.g. a superseded search-as-you-type query)
+      // should fail immediately, not retry -- retrying it would just
+      // race the very request that superseded it.
+      if (options.signal?.aborted || attempt >= RETRY_ATTEMPTS - 1) throw err;
+      await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt);
+    }
+  }
+}
+
 // A measure_id can resolve to a measure with no measure_impacts/
 // measure_programs row at all -- 18 of the 21 ingested BP2 editions
 // have no PBS Table 1.2 data behind them (see measure_list()'s own
@@ -17,7 +47,7 @@ export async function fetchMeasureDetail(name, edition) {
   url.searchParams.set("name", name);
   url.searchParams.set("edition", edition);
 
-  const res = await fetch(url);
+  const res = await fetchWithRetry(url);
   if (res.status === 404) {
     return null;
   }
@@ -38,7 +68,7 @@ export async function fetchProgramProfile(programName, portfolio) {
   url.searchParams.set("program_name", programName);
   url.searchParams.set("portfolio", portfolio);
 
-  const res = await fetch(url);
+  const res = await fetchWithRetry(url);
   if (res.status === 404) {
     throw new Error(`No program profile found for "${programName}" (${portfolio})`);
   }
@@ -59,7 +89,7 @@ export async function fetchProgramEstimateHistory(programName, portfolio) {
   url.searchParams.set("program_name", programName);
   url.searchParams.set("portfolio", portfolio);
 
-  const res = await fetch(url);
+  const res = await fetchWithRetry(url);
   if (res.status === 404) {
     throw new Error(`No estimate history found for "${programName}" (${portfolio})`);
   }
@@ -78,7 +108,7 @@ export async function fetchRelatedPrograms(programName, portfolio) {
   url.searchParams.set("program_name", programName);
   url.searchParams.set("portfolio", portfolio);
 
-  const res = await fetch(url);
+  const res = await fetchWithRetry(url);
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
   }
@@ -98,7 +128,7 @@ export async function fetchPortfolioProfile(portfolio, editionOrBudgetYear) {
   url.searchParams.set("portfolio", portfolio);
   url.searchParams.set("budget_year", budgetYear(editionOrBudgetYear));
 
-  const res = await fetch(url);
+  const res = await fetchWithRetry(url);
   if (res.status === 404) {
     throw new Error(`No portfolio profile found for "${portfolio}"`);
   }
@@ -114,7 +144,7 @@ export async function fetchAgencyOutcomeProfile(agency, portfolio, editionOrBudg
   url.searchParams.set("portfolio", portfolio);
   url.searchParams.set("budget_year", budgetYear(editionOrBudgetYear));
 
-  const res = await fetch(url);
+  const res = await fetchWithRetry(url);
   if (res.status === 404) {
     throw new Error(`No outcome profile found for "${agency}"`);
   }
@@ -133,7 +163,7 @@ export async function fetchMeasureText(name, edition) {
   url.searchParams.set("name", name);
   url.searchParams.set("edition", edition);
 
-  const res = await fetch(url);
+  const res = await fetchWithRetry(url);
   if (res.status === 404) {
     return null;
   }
@@ -155,7 +185,7 @@ export async function fetchMeasureText(name, edition) {
 const MEASURE_LIST_CACHE_KEY = "measureListCache.v1";
 
 export async function fetchMeasureList() {
-  const res = await fetch(`${API_BASE}/measures/list/`);
+  const res = await fetchWithRetry(`${API_BASE}/measures/list/`);
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
   }
@@ -192,7 +222,7 @@ export async function resolveMeasureId(id) {
   const url = new URL(`${API_BASE}/measures/by-id/`);
   url.searchParams.set("id", id);
 
-  const res = await fetch(url);
+  const res = await fetchWithRetry(url);
   if (res.status === 404) {
     return null;
   }
@@ -211,7 +241,7 @@ export async function fetchMeasureCombined(ids) {
   const url = new URL(`${API_BASE}/measures/combined/`);
   url.searchParams.set("ids", ids.join(","));
 
-  const res = await fetch(url);
+  const res = await fetchWithRetry(url);
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
   }
@@ -225,7 +255,7 @@ export async function fetchMeasureCombined(ids) {
 // the one payload" pattern measure_list() already uses (a couple thousand
 // rows, no need for four separate round trips per pick).
 export async function fetchProgramHierarchy() {
-  const res = await fetch(`${API_BASE}/measures/program-hierarchy/`);
+  const res = await fetchWithRetry(`${API_BASE}/measures/program-hierarchy/`);
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
   }
@@ -239,7 +269,7 @@ export async function fetchProgramHierarchy() {
 // for why this groups differently (and more broadly) than every other
 // program fetch here.
 export async function fetchProgramOutcomeAudit() {
-  const res = await fetch(`${API_BASE}/measures/program-outcome-audit/`);
+  const res = await fetchWithRetry(`${API_BASE}/measures/program-outcome-audit/`);
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
   }
@@ -259,7 +289,7 @@ export async function fetchMeasuresByProgram(programName, portfolio) {
   url.searchParams.set("program_name", programName);
   url.searchParams.set("portfolio", portfolio);
 
-  const res = await fetch(url);
+  const res = await fetchWithRetry(url);
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
   }
@@ -281,7 +311,7 @@ export async function fetchMeasureTextSearch(query, { signal } = {}) {
   const url = new URL(`${API_BASE}/measures/search-text/`);
   url.searchParams.set("q", query);
 
-  const res = await fetch(url, { signal });
+  const res = await fetchWithRetry(url, { signal });
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
   }
@@ -303,7 +333,7 @@ export async function fetchMeasureTopicSearch(query, { signal } = {}) {
   const url = new URL(`${API_BASE}/measures/search-topic/`);
   url.searchParams.set("q", query);
 
-  const res = await fetch(url, { signal });
+  const res = await fetchWithRetry(url, { signal });
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
   }

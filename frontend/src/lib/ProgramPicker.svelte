@@ -14,7 +14,8 @@
   let loading = $state(true);
   let error = $state(null);
 
-  $effect(() => {
+  function loadHierarchy() {
+    loading = true;
     fetchProgramHierarchy()
       .then((rows) => {
         hierarchy = rows;
@@ -26,6 +27,10 @@
       .finally(() => {
         loading = false;
       });
+  }
+
+  $effect(() => {
+    loadHierarchy();
   });
 
   // A cascading drill-down, one level revealed at a time, rather than
@@ -179,6 +184,7 @@
     <p class="status">Loading programs…</p>
   {:else if error}
     <p class="status error">{error}</p>
+    <button type="button" class="retry-btn" onclick={loadHierarchy}>Retry</button>
   {:else}
     <div class="program-search">
       <input
@@ -664,5 +670,20 @@
   }
   .status.error {
     color: #b91c1c;
+  }
+  .retry-btn {
+    display: block;
+    margin: 0 auto;
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 0.4rem 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-h);
+    cursor: pointer;
+  }
+  .retry-btn:hover {
+    border-color: var(--text-muted);
   }
 </style>

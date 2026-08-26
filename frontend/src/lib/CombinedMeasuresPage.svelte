@@ -15,7 +15,14 @@
   // it doesn't change `ids` or trigger a re-fetch.
   let { ids, onselect, onBack, onDeepDive } = $props();
 
-  let combinedPromise = $derived(fetchMeasureCombined(ids));
+  // Bumped by the "Retry" button in the {:catch} block below to force
+  // combinedPromise to re-run after a transient failure (a "Failed to
+  // fetch" that outlasted fetchWithRetry's own retries).
+  let retryToken = $state(0);
+  let combinedPromise = $derived.by(() => {
+    retryToken;
+    return fetchMeasureCombined(ids);
+  });
 
   // Deliberately a one-time snapshot, not live-bound to `ids` -- App.svelte
   // remounts this whole component (via {#key selectedSet}) on every new
@@ -195,6 +202,7 @@
     </div>
   {:catch error}
     <p class="status error">{error.message}</p>
+    <button type="button" class="retry-btn" onclick={() => retryToken++}>Retry</button>
   {/await}
 </div>
 
@@ -285,6 +293,21 @@
   }
   .status.error {
     color: #b91c1c;
+  }
+  .retry-btn {
+    display: block;
+    margin: 0 auto;
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 0.4rem 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-h);
+    cursor: pointer;
+  }
+  .retry-btn:hover {
+    border-color: var(--text-muted);
   }
 
   .layout {

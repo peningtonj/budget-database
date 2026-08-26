@@ -17,8 +17,13 @@
     "#4338ca", "#15803d", "#a21caf", "#0369a1", "#b91c1c",
   ];
 
-  let dataPromise = $derived(
-    mode === "portfolio"
+  // Bumped by the "Retry" link in the {:catch} block below to force
+  // dataPromise to re-run after a transient failure (a "Failed to
+  // fetch" that outlasted fetchWithRetry's own retries).
+  let retryToken = $state(0);
+  let dataPromise = $derived.by(() => {
+    retryToken;
+    return mode === "portfolio"
       ? fetchPortfolioProfile(portfolio, edition).then((d) =>
           d.agencies.map((a) => ({ label: a.agency, series: a.series })),
         )
@@ -27,8 +32,8 @@
             label: `Outcome ${o.outcome_number}${o.outcome_description ? `: ${o.outcome_description}` : ""}`,
             series: o.series,
           })),
-        ),
-  );
+        );
+  });
 
   const width = 720;
   const height = 380;
@@ -164,6 +169,7 @@
     {/if}
   {:catch error}
     <p class="status error">{error.message}</p>
+    <button type="button" class="retry-btn" onclick={() => retryToken++}>Retry</button>
   {/await}
 </div>
 
@@ -228,5 +234,20 @@
   }
   .status.error {
     color: #b91c1c;
+  }
+  .retry-btn {
+    display: block;
+    margin: 0 auto;
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 0.4rem 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-h);
+    cursor: pointer;
+  }
+  .retry-btn:hover {
+    border-color: var(--text-muted);
   }
 </style>

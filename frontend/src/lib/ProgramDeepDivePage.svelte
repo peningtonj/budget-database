@@ -15,7 +15,14 @@
   // building a second way to view more than one program at once.
   let { programName, portfolio, onViewPrograms } = $props();
 
-  let estimatePromise = $derived(fetchProgramEstimateHistory(programName, portfolio));
+  // Bumped by the "Retry" button in the {:catch} block below to force
+  // estimatePromise to re-run after a transient failure (a "Failed to
+  // fetch" that outlasted fetchWithRetry's own retries).
+  let retryToken = $state(0);
+  let estimatePromise = $derived.by(() => {
+    retryToken;
+    return fetchProgramEstimateHistory(programName, portfolio);
+  });
   // Independent of estimatePromise (a missing/empty related list is the
   // common case, not an error worth failing the whole page over) --
   // never blocks or fails the main chart if this lookup has an issue.
@@ -223,6 +230,7 @@
     </section>
   {:catch error}
     <p class="status error">{error.message}</p>
+    <button type="button" class="retry-btn" onclick={() => retryToken++}>Retry</button>
   {/await}
 </div>
 
@@ -355,5 +363,20 @@
   }
   .status.error {
     color: #b91c1c;
+  }
+  .retry-btn {
+    display: block;
+    margin: 0 auto;
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 0.4rem 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-h);
+    cursor: pointer;
+  }
+  .retry-btn:hover {
+    border-color: var(--text-muted);
   }
 </style>

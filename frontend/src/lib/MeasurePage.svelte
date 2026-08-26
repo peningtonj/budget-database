@@ -14,7 +14,14 @@
   // (name, edition) -- true for 18 of the 21 ingested BP2 editions (see
   // measure_list()'s own docstring); not an error, just "no $ breakdown
   // to show", handled below by falling back to a text-only layout.
-  let detailPromise = $derived(fetchMeasureDetail(name, edition));
+  // Bumped by the "Retry" button in the {:catch} block below to force
+  // detailPromise to re-run after a transient failure (a "Failed to
+  // fetch" that outlasted fetchWithRetry's own retries).
+  let retryToken = $state(0);
+  let detailPromise = $derived.by(() => {
+    retryToken;
+    return fetchMeasureDetail(name, edition);
+  });
 
   /**
    * @typedef {{type: "portfolio", portfolio: string}
@@ -168,6 +175,7 @@
     {/if}
   {:catch error}
     <p class="status error">{error.message}</p>
+    <button type="button" class="retry-btn" onclick={() => retryToken++}>Retry</button>
   {/await}
 </div>
 
@@ -271,6 +279,21 @@
   }
   .status.error {
     color: #b91c1c;
+  }
+  .retry-btn {
+    display: block;
+    margin: 0 auto;
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 0.4rem 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-h);
+    cursor: pointer;
+  }
+  .retry-btn:hover {
+    border-color: var(--text-muted);
   }
   .columns {
     display: block;

@@ -19,6 +19,13 @@
 
   let currentSelections = $state(untrack(() => [...programSelections]));
 
+  // Bumped by the "Retry" button in the {:catch} block below to force
+  // dataPromise to re-run after a transient failure (a "Failed to
+  // fetch" that outlasted fetchWithRetry's own retries, e.g. a slow
+  // backend cold start) -- read but never otherwise used, purely to be
+  // a dependency dataPromise's own $derived recomputes on.
+  let retryToken = $state(0);
+
   // Off by default -- (program_name, portfolio) stays the identity
   // everywhere unless the user explicitly opts into treating same-named
   // programs across portfolios/outcomes as one. This is a purely
@@ -62,8 +69,9 @@
   // Once that resolves, fetch each selected program's own actuals
   // profile (program_profile()/fetchProgramProfile) -- the chart's own
   // data source, keyed the same (program_name, portfolio) way.
-  let dataPromise = $derived(
-    Promise.all(
+  let dataPromise = $derived.by(() => {
+    retryToken;
+    return Promise.all(
       currentSelections.map((sel) =>
         fetchMeasuresByProgram(sel.program_name, sel.portfolio).catch(() => ({
           program_name: sel.program_name,
@@ -80,8 +88,8 @@
         if (profiles[i]) profileByKey.set(programKey(p), profiles[i]);
       });
       return { programs, profileByKey };
-    }),
-  );
+    });
+  });
 
   function removeProgram(programName, portfolio) {
     currentSelections = currentSelections.filter(
@@ -489,6 +497,7 @@
     {/each}
   {:catch error}
     <p class="status error">{error.message}</p>
+    <button type="button" class="retry-btn" onclick={() => retryToken++}>Retry</button>
   {/await}
 </div>
 
@@ -753,5 +762,20 @@
   }
   .status.error {
     color: #b91c1c;
+  }
+  .retry-btn {
+    display: block;
+    margin: 0 auto;
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 0.4rem 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-h);
+    cursor: pointer;
+  }
+  .retry-btn:hover {
+    border-color: var(--text-muted);
   }
 </style>
