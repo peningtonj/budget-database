@@ -1,6 +1,7 @@
 import re
 import sys
 import threading
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -648,12 +649,21 @@ def program_hierarchy(request):
     """
     global _program_hierarchy_cache
     if _program_hierarchy_cache is not None:
+        print("program_hierarchy: served from cache", flush=True)
         return Response(_program_hierarchy_cache)
 
     with _program_hierarchy_lock:
         if _program_hierarchy_cache is not None:
+            print("program_hierarchy: served from cache (built while waiting for lock)", flush=True)
             return Response(_program_hierarchy_cache)
+        print("program_hierarchy: cache miss, building...", flush=True)
+        t0 = time.time()
         _program_hierarchy_cache = _build_program_hierarchy()
+        print(
+            f"program_hierarchy: cache built in {time.time() - t0:.2f}s "
+            f"({len(_program_hierarchy_cache)} rows)",
+            flush=True,
+        )
     return Response(_program_hierarchy_cache)
 
 
