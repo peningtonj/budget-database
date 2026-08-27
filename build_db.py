@@ -8,6 +8,7 @@ Each Budget PBS reports an "Estimated actual" for the year prior to its budget
 year, plus the budget-year figure and forward estimates. We store every
 column as a tidy long table so the estimated-actual series is one filter away.
 """
+import argparse
 import os
 import re
 import glob
@@ -135,10 +136,8 @@ def iter_files():
                 yield edition, clean_portfolio(portfolio), f
 
 
-def create_schema(con):
-    con.executescript("""
-    DROP TABLE IF EXISTS program_expenses;
-    CREATE TABLE program_expenses (
+_PROGRAM_EXPENSES_TABLE = """
+    program_expenses (
         id                  INTEGER PRIMARY KEY,
         edition             TEXT NOT NULL,   -- e.g. '2025-26 Budget'
         budget_year         TEXT NOT NULL,   -- e.g. '2025-26'
@@ -153,11 +152,25 @@ def create_schema(con):
         amount_thousands    INTEGER NOT NULL,
         source_file         TEXT NOT NULL,
         sheet_name          TEXT
-    );
-    """)
+    )
+"""
+
+
+def create_schema(con):
+    con.executescript(f"DROP TABLE IF EXISTS program_expenses; CREATE TABLE {_PROGRAM_EXPENSES_TABLE};")
     for col in ("estimate_type", "portfolio", "agency", "program_name",
                 "fiscal_year", "budget_year"):
         con.execute(f"CREATE INDEX idx_pe_{col} ON program_expenses({col});")
+
+
+def ensure_schema(con):
+    """Same table/indexes as create_schema(), but CREATE ... IF NOT EXISTS
+    rather than DROP + CREATE -- used by a scoped (--only) run, which must
+    never wipe rows outside the files it's actually re-ingesting."""
+    con.executescript(f"CREATE TABLE IF NOT EXISTS {_PROGRAM_EXPENSES_TABLE};")
+    for col in ("estimate_type", "portfolio", "agency", "program_name",
+                "fiscal_year", "budget_year"):
+        con.execute(f"CREATE INDEX IF NOT EXISTS idx_pe_{col} ON program_expenses({col});")
 
 
 def normalize_program_name_casing(con):
@@ -225,16 +238,44 @@ def normalize_program_name_casing(con):
     return renamed
 
 
-def main():
+def main(only=None):
+    """only: an optional list of substrings matched (case-insensitively)
+    against each file's own path relative to BUDGET_DIR -- e.g.
+    "2022-23 October Budget/Social Services" to rescan one edition's
+    portfolio folder, or "NDIA.xlsx" to rescan just one workbook. When
+    given, this is a SCOPED reingest, not a full rebuild: the table is
+    never dropped (ensure_schema, not create_schema), and only the
+    matching files' own existing rows are cleared (by source_file)
+    before they're reparsed and reinserted -- every other file's rows
+    are left completely untouched. Built for exactly the situation a
+    one- or two-row program-name fix keeps running into: a full rebuild
+    re-scans 1,600+ workbooks to change a handful of rows, taking
+    9-15 minutes when the actual affected file set is tiny.
+
+    normalize_program_name_casing() still runs at the end over the
+    WHOLE table regardless of scope -- it's a fast in-DB pass (no
+    re-parsing), and a scoped run can still change which cross-edition
+    casing group a program falls into (exactly what motivated adding
+    this flag in the first place -- see build_db.py's own commit
+    history), so it has to see the complete, current table to stay
+    correct.
+    """
     con = sqlite3.connect(DB_PATH)
-    create_schema(con)
+    if only:
+        ensure_schema(con)
+    else:
+        create_schema(con)
     inserted = 0
     empty, errors = [], []
     conflicts = []  # (source_file, key, kept_amount, dropped_amount)
     file_count = 0
+    skipped = 0
     for edition, portfolio, path in iter_files():
-        file_count += 1
         rel = os.path.relpath(path, BUDGET_DIR)
+        if only and not any(pat.lower() in rel.lower() for pat in only):
+            skipped += 1
+            continue
+        file_count += 1
         agency = clean_agency(path)
         by = budget_year(edition)
         try:
@@ -247,6 +288,12 @@ def main():
             empty.append(rel)
             continue
         recs = apply_patches(rel, recs)
+        if only:
+            # Idempotent re-runs: clear this exact file's own previously
+            # ingested rows before reinserting, so rerunning the same
+            # --only doesn't duplicate rows the way it would in full-
+            # rebuild mode (where the whole table was already dropped).
+            con.execute("DELETE FROM program_expenses WHERE source_file = ?", (rel,))
         # Occasionally a source workbook mislabels a line (e.g. reuses a
         # program name inside a different program's block), producing two
         # conflicting amounts for the same key. Keep the first (top-to-
@@ -277,6 +324,9 @@ def main():
 
     renamed = normalize_program_name_casing(con)
 
+    if only:
+        print(f"Scoped to (--only) : {only}")
+        print(f"Files matched      : {file_count}  (skipped {skipped} non-matching)")
     print(f"Files scanned      : {file_count}")
     print(f"Rows inserted      : {inserted}")
     print(f"Files w/ 0 records : {len(empty)}")
@@ -299,4 +349,23 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Build (or scoped-reingest into) programs.db from data/pbs/Budget.",
+    )
+    parser.add_argument(
+        "--only",
+        action="append",
+        default=None,
+        metavar="PATH_SUBSTRING",
+        help=(
+            "Scope to files whose path (relative to data/pbs/Budget, e.g. "
+            "'2022-23 October Budget/Social Services/2022-23 OCT PBS Excel "
+            "Tables - NDIA.xlsx') contains this substring (case-insensitive). "
+            "Repeatable to match several files/folders at once. Only those "
+            "files' own rows are cleared and reinserted -- every other row in "
+            "programs.db is left untouched, and the table itself is never "
+            "dropped. Omit for a normal full rebuild."
+        ),
+    )
+    args = parser.parse_args()
+    main(only=args.only)

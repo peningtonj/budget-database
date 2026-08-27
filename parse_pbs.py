@@ -162,6 +162,25 @@ _KNOWN_PROGRAM_NAME_TYPOS = {
         "Australian Charities and Not-for-profits Commission",
     "Australian Charities and Not-for-profit": "Australian Charities and Not-for-profits",
     "Personal Insolvency and Trustees Services": "Personal Insolvency and Trustee Services",
+    # NDIA's own Program 1.1 -- reported as "Support" (singular) in every
+    # edition except the 2022-23 October Budget and 2025-26 Budget, which
+    # both say "Supports" instead; confirmed the same program throughout
+    # via smooth dollar continuity and an unchanged program number/agency
+    # across every boundary. Two entries, not one: the 2022-23 October
+    # Budget workbook's own header text is lowercase ("Program 1.1 -
+    # Reasonable and necessary supports for participants") where 2025-26
+    # Budget's is Title Case -- this dict is an exact-match lookup, so
+    # each distinct raw casing needs its own key or it silently falls
+    # through uncorrected (confirmed the hard way: the first version of
+    # this fix only had the Title Case key, and normalize_program_name_
+    # casing() had been masking the 2022-23 October row's real casing by
+    # recasing it to match 2025-26 Budget's -- once 2025-26 Budget's own
+    # row stopped sharing its case-folded name, that masking stopped and
+    # the lowercase original was exposed, uncorrected).
+    "Reasonable and Necessary Supports for Participants":
+        "Reasonable and Necessary Support for Participants",
+    "Reasonable and necessary supports for participants":
+        "Reasonable and Necessary Support for Participants",
     "Programmes to promote Australia's exports and other international economic interests":
         "Programs to promote Australia's exports and other international economic interests",
     "Australians have access to independent human rights complaint handling and public inquiry processes and benefit from human rights education, promotion and monitoring and compliance activities":
