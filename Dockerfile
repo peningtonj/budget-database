@@ -34,17 +34,16 @@ RUN cd backend && python manage.py collectstatic --noinput
 RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 EXPOSE 8000
-# Bare `gunicorn` defaults to ONE sync worker -- every request is handled
-# strictly one at a time, so a single slow one (a cold ONNX embedding-model
-# load for topic search, or program_hierarchy's own ~20k-row query under a
-# CPU-throttled host) queues up every other request behind it, including
-# unrelated ones like the "By program" tab's own fetch -- read from the
-# outside as the whole site hanging. `--worker-class gthread` + `--threads
-# 4` gives real concurrency within that one worker (SQLite queries and
-# onnxruntime inference both release the GIL) without loading the
-# embedding model into a second process -- kept to 1 worker, not more,
-# since Render's free tier is memory-capped (512MB) and a second copy of
-# that model risks an OOM kill there. `--timeout 120` (gunicorn's own
-# default is 30s) gives a legitimately slow cold-model-load request room
-# to finish instead of being SIGKILLed mid-request and silently respawned.
-CMD ["gunicorn", "--chdir", "backend", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "1", "--threads", "4", "--worker-class", "gthread", "--timeout", "120"]
+# Reverted to bare gunicorn defaults (no --worker-class/--threads/
+# --timeout) -- the gthread + 120s-timeout combination made the
+# self-hosted Docker deployment on constrained laptop hardware time out
+# across the board instead of only the one heavy endpoint it targeted:
+# a 120s timeout means a genuinely stuck request now hangs 4x longer
+# (gunicorn's own default is 30s) before failing, and that's before the
+# frontend's own fetchWithRetry compounds it with up to 3 automatic
+# retries. program_hierarchy() is cached server-side now regardless
+# (see its own docstring), which was the actual fix for the one endpoint
+# that was slow -- so this concurrency tuning isn't pulling its weight
+# here and isn't worth the regression. Revisit if program_hierarchy's
+# cache alone doesn't hold up once further tested.
+CMD ["gunicorn", "--chdir", "backend", "config.wsgi:application", "--bind", "0.0.0.0:8000"]
