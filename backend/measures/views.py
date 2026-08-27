@@ -1395,6 +1395,7 @@ def measure_combined(request):
 
 
 _program_reverse_index = None
+_program_reverse_index_lock = threading.Lock()
 
 
 def _build_program_reverse_index():
@@ -1427,45 +1428,56 @@ def _build_program_reverse_index():
     instead of scoped to one measure's own rows, since two different
     measures touching the same program can come from completely
     different editions.
+
+    Guarded by _program_reverse_index_lock (double-checked, same pattern
+    as program_hierarchy()'s own cache): with gunicorn's gthread workers,
+    several requests can land here concurrently right after a restart,
+    all seeing an empty cache -- without the lock each would redundantly
+    rebuild the whole index from scratch at once, several MeasureProgram/
+    ProgramExpense table scans running concurrently instead of one.
     """
     global _program_reverse_index
     if _program_reverse_index is not None:
         return _program_reverse_index
 
-    rows_by_budget_year = defaultdict(list)
-    for p in MeasureProgram.objects.values(
-        "measure_name", "edition", "portfolio", "agency", "program_number"
-    ):
-        rows_by_budget_year[_budget_year(p["edition"])].append(p)
+    with _program_reverse_index_lock:
+        if _program_reverse_index is not None:
+            return _program_reverse_index
 
-    index = defaultdict(set)  # (program_name, portfolio) -> {(measure_name, edition)}
-    for budget_year, rows in rows_by_budget_year.items():
-        agency_name_sets = {}
-        for p in rows:
-            key = (p["agency"], p["portfolio"])
-            if key not in agency_name_sets:
-                agency_name_sets[key] = _agency_history(p["agency"], p["portfolio"])
-        all_candidate_names = set().union(*agency_name_sets.values()) if agency_name_sets else set()
+        rows_by_budget_year = defaultdict(list)
+        for p in MeasureProgram.objects.values(
+            "measure_name", "edition", "portfolio", "agency", "program_number"
+        ):
+            rows_by_budget_year[_budget_year(p["edition"])].append(p)
 
-        program_lookup = {
-            (r["agency"], r["program_number"]): r["program_name"]
-            for r in ProgramExpense.objects.filter(
-                budget_year=budget_year, agency__in=all_candidate_names
-            ).values("agency", "program_number", "program_name")
-        }
+        index = defaultdict(set)  # (program_name, portfolio) -> {(measure_name, edition)}
+        for budget_year, rows in rows_by_budget_year.items():
+            agency_name_sets = {}
+            for p in rows:
+                key = (p["agency"], p["portfolio"])
+                if key not in agency_name_sets:
+                    agency_name_sets[key] = _agency_history(p["agency"], p["portfolio"])
+            all_candidate_names = set().union(*agency_name_sets.values()) if agency_name_sets else set()
 
-        for p in rows:
-            resolved_name = None
-            for candidate in agency_name_sets[(p["agency"], p["portfolio"])]:
-                resolved_name = program_lookup.get((candidate, p["program_number"]))
+            program_lookup = {
+                (r["agency"], r["program_number"]): r["program_name"]
+                for r in ProgramExpense.objects.filter(
+                    budget_year=budget_year, agency__in=all_candidate_names
+                ).values("agency", "program_number", "program_name")
+            }
+
+            for p in rows:
+                resolved_name = None
+                for candidate in agency_name_sets[(p["agency"], p["portfolio"])]:
+                    resolved_name = program_lookup.get((candidate, p["program_number"]))
+                    if resolved_name:
+                        break
                 if resolved_name:
-                    break
-            if resolved_name:
-                index[(resolved_name, _canon_portfolio(p["portfolio"]))].add(
-                    (p["measure_name"], p["edition"])
-                )
+                    index[(resolved_name, _canon_portfolio(p["portfolio"]))].add(
+                        (p["measure_name"], p["edition"])
+                    )
 
-    _program_reverse_index = index
+        _program_reverse_index = index
     return _program_reverse_index
 
 
@@ -1539,6 +1551,8 @@ CHROMA_COLLECTION_NAME = "measure_text"
 
 _topic_collection = None
 _query_embedder = None
+_topic_collection_lock = threading.Lock()
+_query_embedder_lock = threading.Lock()
 
 
 def _get_topic_collection():
@@ -1552,23 +1566,33 @@ def _get_topic_collection():
     Returns None if the collection hasn't been built yet (rather than
     raising), so measure_topic_search can degrade to an empty result
     with a clear message instead of a 500.
+
+    Guarded by _topic_collection_lock: two gthread requests racing to
+    construct chromadb.PersistentClient against the same on-disk path
+    concurrently is a real risk (not just wasted work, unlike the
+    reverse-index cache above) -- chromadb's own sqlite-backed
+    persistence isn't documented as safe for two independent clients
+    opening the same store at once.
     """
     global _topic_collection
     if _topic_collection is not None:
         return _topic_collection
-    import chromadb
-    from chromadb.utils import embedding_functions
+    with _topic_collection_lock:
+        if _topic_collection is not None:
+            return _topic_collection
+        import chromadb
+        from chromadb.utils import embedding_functions
 
-    if not CHROMA_PATH.exists():
-        return None
-    client = chromadb.PersistentClient(path=str(CHROMA_PATH))
-    try:
-        collection = client.get_collection(
-            name=CHROMA_COLLECTION_NAME, embedding_function=embedding_functions.DefaultEmbeddingFunction()
-        )
-    except Exception:
-        return None
-    _topic_collection = collection
+        if not CHROMA_PATH.exists():
+            return None
+        client = chromadb.PersistentClient(path=str(CHROMA_PATH))
+        try:
+            collection = client.get_collection(
+                name=CHROMA_COLLECTION_NAME, embedding_function=embedding_functions.DefaultEmbeddingFunction()
+            )
+        except Exception:
+            return None
+        _topic_collection = collection
     return _topic_collection
 
 
@@ -1594,13 +1618,19 @@ def _get_query_embedder():
     query_texts instead) fixes that: the expensive session/tokenizer
     build happens once per server process, same as the collection load
     above, not once per request.
+
+    Guarded by _query_embedder_lock, same reasoning as
+    _get_topic_collection's own lock above.
     """
     global _query_embedder
     if _query_embedder is not None:
         return _query_embedder
-    from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
+    with _query_embedder_lock:
+        if _query_embedder is not None:
+            return _query_embedder
+        from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
 
-    _query_embedder = ONNXMiniLM_L6_V2()
+        _query_embedder = ONNXMiniLM_L6_V2()
     return _query_embedder
 
 
