@@ -35,6 +35,7 @@ function sleep(ms) {
 }
 
 async function fetchWithRetry(input, options = {}) {
+  const url = String(input);
   for (let attempt = 0; ; attempt++) {
     try {
       return await fetch(input, options);
@@ -42,10 +43,50 @@ async function fetchWithRetry(input, options = {}) {
       // An aborted request (e.g. a superseded search-as-you-type query)
       // should fail immediately, not retry -- retrying it would just
       // race the very request that superseded it.
-      if (options.signal?.aborted || attempt >= RETRY_ATTEMPTS - 1) throw err;
+      if (options.signal?.aborted) throw err;
+      if (attempt >= RETRY_ATTEMPTS - 1) {
+        // Every browser reports a network-level failure as the same
+        // generic "TypeError: Failed to fetch" (or Firefox/Safari's own
+        // equivalents) regardless of the real cause -- DNS failure,
+        // connection refused, a corporate proxy/security extension
+        // silently dropping the request, CORS, being offline. That
+        // message alone is close to useless for a report from someone
+        // who can't open devtools to see the actual network tab, so
+        // wrap it with everything else the browser *does* expose: the
+        // exact URL, the error's own name/message, how many attempts
+        // were made, and navigator.onLine (distinguishes "this device
+        // has no network at all" from "reached the network, blocked
+        // somewhere past it"). See httpError() below for the equivalent
+        // on an actual (non-network-level) HTTP error response.
+        const detail =
+          `${err.name}: ${err.message} -- fetching ${url} ` +
+          `(failed all ${attempt + 1} attempt${attempt === 0 ? "" : "s"}; ` +
+          `navigator.onLine=${typeof navigator !== "undefined" ? navigator.onLine : "unknown"})`;
+        const wrapped = new Error(detail);
+        wrapped.cause = err;
+        throw wrapped;
+      }
       await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt);
     }
   }
+}
+
+// A non-ok HTTP response (as opposed to fetchWithRetry's own network-
+// level failure above) at least comes with a real status code -- but
+// "Request failed: 500" alone still hides the statusText and whatever
+// the server's own error body said (Django REST Framework's default
+// error responses are JSON with a "detail" key, exactly the extra
+// context worth surfacing to someone who can't open devtools).
+async function httpError(res) {
+  let bodyText = "";
+  try {
+    bodyText = await res.text();
+  } catch {
+    // Body already consumed or unreadable -- omit it, not worth failing
+    // the error-reporting path itself over.
+  }
+  const snippet = bodyText ? `: ${bodyText.slice(0, 500)}` : "";
+  return new Error(`HTTP ${res.status} ${res.statusText || ""} from ${res.url}${snippet}`.trim());
 }
 
 // Runs fn over every item, at most `limit` in flight at once, rather
@@ -92,7 +133,7 @@ export async function fetchMeasureDetail(name, edition) {
     return null;
   }
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -113,7 +154,7 @@ export async function fetchProgramProfile(programName, portfolio) {
     throw new Error(`No program profile found for "${programName}" (${portfolio})`);
   }
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -134,7 +175,7 @@ export async function fetchProgramEstimateHistory(programName, portfolio) {
     throw new Error(`No estimate history found for "${programName}" (${portfolio})`);
   }
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -150,7 +191,7 @@ export async function fetchRelatedPrograms(programName, portfolio) {
 
   const res = await fetchWithRetry(url);
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -173,7 +214,7 @@ export async function fetchPortfolioProfile(portfolio, editionOrBudgetYear) {
     throw new Error(`No portfolio profile found for "${portfolio}"`);
   }
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -189,7 +230,7 @@ export async function fetchAgencyOutcomeProfile(agency, portfolio, editionOrBudg
     throw new Error(`No outcome profile found for "${agency}"`);
   }
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -208,7 +249,7 @@ export async function fetchMeasureText(name, edition) {
     return null;
   }
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -227,7 +268,7 @@ const MEASURE_LIST_CACHE_KEY = "measureListCache.v1";
 export async function fetchMeasureList() {
   const res = await fetchWithRetry(`${API_BASE}/measures/list/`);
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   const data = await res.json();
   try {
@@ -267,7 +308,7 @@ export async function resolveMeasureId(id) {
     return null;
   }
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -283,7 +324,7 @@ export async function fetchMeasureCombined(ids) {
 
   const res = await fetchWithRetry(url);
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -313,7 +354,7 @@ const PROGRAM_HIERARCHY_CACHE_KEY = "programHierarchyCache.v1";
 export async function fetchProgramHierarchy() {
   const res = await fetchWithRetry(`${API_BASE}/measures/program-hierarchy/`);
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   const data = await res.json();
   try {
@@ -347,7 +388,7 @@ export function cachedProgramHierarchy() {
 export async function fetchProgramOutcomeAudit() {
   const res = await fetchWithRetry(`${API_BASE}/measures/program-outcome-audit/`);
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -367,7 +408,7 @@ export async function fetchMeasuresByProgram(programName, portfolio) {
 
   const res = await fetchWithRetry(url);
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -389,7 +430,7 @@ export async function fetchMeasureTextSearch(query, { signal } = {}) {
 
   const res = await fetchWithRetry(url, { signal });
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -411,7 +452,7 @@ export async function fetchMeasureTopicSearch(query, { signal } = {}) {
 
   const res = await fetchWithRetry(url, { signal });
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
