@@ -3,10 +3,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-# Vite bakes import.meta.env.VITE_* in at build time. api.js does
-# `new URL(`${API_BASE}/...`)` with no base argument, which throws
-# "Invalid URL" for a relative string — this must be absolute.
-ENV VITE_API_BASE=https://aus-budget.duckdns.org/api
+# No VITE_API_BASE set here deliberately — api.js's own production default
+# (window.location.origin + "/api") now handles this correctly regardless
+# of which port actually served the page, which a fixed build-time value
+# can't do for a site reachable on more than one external port.
 RUN npm run build
 
 FROM caddy:2

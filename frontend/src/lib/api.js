@@ -4,7 +4,19 @@
 // without rebuilding). Render: set on the frontend static site to the
 // backend web service's own URL + "/api", e.g.
 // "https://budget-api.onrender.com/api" -- see render.yaml.
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000/api";
+//
+// Deploys that put the frontend and API behind the same reverse proxy
+// (nginx/Caddy path-based routing) shouldn't hardcode a host+port here at
+// all -- a site reachable on more than one port (e.g. a firewall-friendly
+// alternate port alongside the standard one) would bake in only one of
+// them, breaking API calls for anyone who loaded the page via the other.
+// window.location.origin always matches whatever actually served the
+// page, port included. DEV keeps the old fixed default since the Vite
+// dev server (5173) and the backend (8000) are genuinely different
+// origins locally, not just different ports of the same reverse proxy.
+const API_BASE =
+  import.meta.env.VITE_API_BASE ??
+  (import.meta.env.DEV ? "http://127.0.0.1:8000/api" : `${window.location.origin}/api`);
 
 // fetch() itself throws (a "Failed to fetch" TypeError, before any HTTP
 // response even exists) on things like a dropped connection, a DNS
