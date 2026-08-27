@@ -66,26 +66,36 @@
   // program's own reverse-index lookup is already a single fast call
   // once the server-side index is warm (see _build_program_reverse_index).
   //
-  // Once that resolves, fetch each selected program's own actuals
-  // profile (program_profile()/fetchProgramProfile) -- the chart's own
-  // data source, keyed the same (program_name, portfolio) way.
+  // Fired in the SAME Promise.all as each selected program's own actuals
+  // profile (program_profile()/fetchProgramProfile), not chained after
+  // it -- the profile fetch only ever needs sel.program_name/portfolio,
+  // already known upfront from currentSelections, never anything from
+  // the measures response. Waiting for every measures call to finish
+  // before starting any profile call was a pure, avoidable serial
+  // round-trip: harmless on localhost, but real added latency once
+  // network round-trip time is non-trivial (Render, a self-host) or the
+  // backend can only handle one request at a time -- exactly the "By
+  // program" summary's own worst case, since it's the one page that
+  // fires this many concurrent requests per load.
   let dataPromise = $derived.by(() => {
     retryToken;
     return Promise.all(
-      currentSelections.map((sel) =>
-        fetchMeasuresByProgram(sel.program_name, sel.portfolio).catch(() => ({
-          program_name: sel.program_name,
-          portfolio: sel.portfolio,
-          measures: [],
-        })),
-      ),
-    ).then(async (programs) => {
-      const profiles = await Promise.all(
-        programs.map((p) => fetchProgramProfile(p.program_name, p.portfolio).catch(() => null)),
-      );
+      currentSelections.map(async (sel) => {
+        const [program, profile] = await Promise.all([
+          fetchMeasuresByProgram(sel.program_name, sel.portfolio).catch(() => ({
+            program_name: sel.program_name,
+            portfolio: sel.portfolio,
+            measures: [],
+          })),
+          fetchProgramProfile(sel.program_name, sel.portfolio).catch(() => null),
+        ]);
+        return { program, profile };
+      }),
+    ).then((results) => {
+      const programs = results.map((r) => r.program);
       const profileByKey = new Map();
-      programs.forEach((p, i) => {
-        if (profiles[i]) profileByKey.set(programKey(p), profiles[i]);
+      results.forEach(({ program: p, profile }) => {
+        if (profile) profileByKey.set(programKey(p), profile);
       });
       return { programs, profileByKey };
     });

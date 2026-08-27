@@ -34,16 +34,24 @@ RUN cd backend && python manage.py collectstatic --noinput
 RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 EXPOSE 8000
-# Reverted to bare gunicorn defaults (no --worker-class/--threads/
-# --timeout) -- the gthread + 120s-timeout combination made the
-# self-hosted Docker deployment on constrained laptop hardware time out
-# across the board instead of only the one heavy endpoint it targeted:
-# a 120s timeout means a genuinely stuck request now hangs 4x longer
-# (gunicorn's own default is 30s) before failing, and that's before the
-# frontend's own fetchWithRetry compounds it with up to 3 automatic
-# retries. program_hierarchy() is cached server-side now regardless
-# (see its own docstring), which was the actual fix for the one endpoint
-# that was slow -- so this concurrency tuning isn't pulling its weight
-# here and isn't worth the regression. Revisit if program_hierarchy's
-# cache alone doesn't hold up once further tested.
-CMD ["gunicorn", "--chdir", "backend", "config.wsgi:application", "--bind", "0.0.0.0:8000"]
+# Bare `gunicorn` defaults to ONE sync worker -- every request handled
+# strictly one at a time. The "By program" summary page's own worst
+# case makes this concrete: summarising N selected programs fires 2N
+# concurrent requests (fetchMeasuresByProgram + fetchProgramProfile per
+# program, see ProgramMeasuresPage.svelte) -- the browser sends them all
+# at once, but a single sync worker processes them one after another, so
+# the page's total load time becomes the SUM of every request's own
+# time instead of the max. Invisible on localhost (sub-millisecond
+# round trips hide it), but exactly what made this page "very slow" on
+# a real deployment. `--worker-class gthread --threads 4` gives real
+# concurrency within one process (SQLite queries and onnxruntime
+# inference both release the GIL) without loading the embedding model
+# into a second process. `--timeout 120` (gunicorn's own default is
+# 30s) gives a legitimately slow cold-model-load request room to finish
+# instead of being SIGKILLed mid-request.
+#
+# This exact combination was reverted once before on suspicion of
+# causing the self-hosted Docker deployment to time out across the
+# board -- confirmed afterward that that issue was unrelated and has
+# since been resolved independently, so reinstating it here.
+CMD ["gunicorn", "--chdir", "backend", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "1", "--threads", "4", "--worker-class", "gthread", "--timeout", "120"]
