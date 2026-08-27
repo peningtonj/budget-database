@@ -102,10 +102,17 @@
   // Removes every portfolio a combined group covers, not just one --
   // "× Remove" on a merged row/section has to drop the whole group from
   // the tray, or the group would silently reappear (missing one of its
-  // own portfolios) the next time this page is opened.
+  // own portfolios) the next time this page is opened. Uses each
+  // member's own original (portfolio, program_name) pair, NOT the
+  // group's single display name -- since combine is now case-
+  // insensitive, a group's constituents can have different casing
+  // (e.g. "Child care Subsidy" + "Child Care Subsidy"), and removeProgram/
+  // removeFromProgramTray both match program_name exactly. Using the
+  // group's one display name for every member would silently fail to
+  // remove whichever selection's casing didn't match it.
   function removeProgramGroup(program) {
-    for (const portfolio of program.portfolios) {
-      removeProgram(program.program_name, portfolio);
+    for (const member of program.members) {
+      removeProgram(member.program_name, member.portfolio);
     }
   }
 
@@ -126,11 +133,20 @@
     const profiles = [...profileByKey.values()];
     if (!combine) return profiles.map((p) => ({ ...p, portfolios: [p.portfolio] }));
 
+    // Case-insensitive fold key -- a program's name can appear with
+    // different capitalization across editions/portfolios purely from
+    // source-workbook drift (the same wording issue normalize_program_
+    // name_casing() fixes server-side for a single edition's own
+    // history; this is the client-side equivalent for two selections
+    // the user is explicitly asking to treat as one). The displayed
+    // name keeps whichever casing was seen first, not the fold key
+    // itself.
     const byName = new Map();
     for (const p of profiles) {
-      const existing = byName.get(p.program_name);
+      const foldKey = p.program_name.toLowerCase();
+      const existing = byName.get(foldKey);
       if (!existing) {
-        byName.set(p.program_name, {
+        byName.set(foldKey, {
           program_name: p.program_name,
           portfolios: [p.portfolio],
           series: p.series.map((d) => ({ ...d })),
@@ -160,20 +176,33 @@
   // somehow returned under both portfolio-scoped lookups) rather than
   // its $ series.
   function groupedPrograms(programs, combine) {
-    if (!combine) return programs.map((p) => ({ ...p, portfolios: [p.portfolio] }));
+    if (!combine) {
+      return programs.map((p) => ({
+        ...p,
+        portfolios: [p.portfolio],
+        members: [{ portfolio: p.portfolio, program_name: p.program_name }],
+      }));
+    }
 
+    // Same case-insensitive fold as groupedProfiles above. `members`
+    // keeps each constituent's own exact (portfolio, program_name) --
+    // see removeProgramGroup's own comment for why that's needed
+    // instead of just the group's one display name.
     const byName = new Map();
     for (const p of programs) {
-      const existing = byName.get(p.program_name);
+      const foldKey = p.program_name.toLowerCase();
+      const existing = byName.get(foldKey);
       if (!existing) {
-        byName.set(p.program_name, {
+        byName.set(foldKey, {
           program_name: p.program_name,
           portfolios: [p.portfolio],
+          members: [{ portfolio: p.portfolio, program_name: p.program_name }],
           measures: [...p.measures],
         });
         continue;
       }
       existing.portfolios.push(p.portfolio);
+      existing.members.push({ portfolio: p.portfolio, program_name: p.program_name });
       const seen = new Set(existing.measures.map((m) => m.measure_id));
       for (const m of p.measures) {
         if (!seen.has(m.measure_id)) {
@@ -288,7 +317,7 @@
   {:then data}
     {@const programs = data.programs}
     {@const profileByKey = data.profileByKey}
-    {@const hasSameNamedPortfolios = new Set(programs.map((p) => p.program_name)).size < programs.length}
+    {@const hasSameNamedPortfolios = new Set(programs.map((p) => p.program_name.toLowerCase())).size < programs.length}
     <header>
       <h1>Summarising {programs.length} program{programs.length === 1 ? "" : "s"}</h1>
       <p class="section-note">
