@@ -1,5 +1,5 @@
 <script>
-  import { fetchProgramHierarchy } from "./api.js";
+  import { fetchProgramHierarchy, cachedProgramHierarchy } from "./api.js";
   import {
     programTray,
     isInProgramTray,
@@ -10,13 +10,23 @@
 
   let { onSummarise } = $props();
 
-  let hierarchy = $state([]);
+  // Stale-while-revalidate, same pattern as SearchPage.svelte's own use
+  // of cachedMeasureList()/fetchMeasureList() -- a cached copy, if any,
+  // populates the picker synchronously so it's usable immediately, not
+  // blocked behind a slow/proxied round trip, while the real fetch below
+  // quietly confirms or replaces it. program-hierarchy has shown the
+  // most trouble reaching some networks of any endpoint in the app, so
+  // this is the one place in the app where falling back to a possibly-
+  // stale copy matters most: better a picker built from last redeploy's
+  // program list than a blank one.
+  const cached = cachedProgramHierarchy();
+  let hierarchy = $state(cached?.programs ?? []);
   // outcome_description keyed by the same "portfolio␟agency␟outcome_number"
   // string program_hierarchy() itself joins with -- sent once per unique
   // outcome rather than repeated on every one of that outcome's own
   // program rows (see that endpoint's own docstring for why).
-  let outcomeDescriptions = $state({});
-  let loading = $state(true);
+  let outcomeDescriptions = $state(cached?.outcomes ?? {});
+  let loading = $state(cached === null);
   let error = $state(null);
 
   function outcomeKey(portfolio, agency, outcomeNumber) {
@@ -24,7 +34,6 @@
   }
 
   function loadHierarchy() {
-    loading = true;
     fetchProgramHierarchy()
       .then((data) => {
         hierarchy = data.programs;
@@ -32,7 +41,10 @@
         error = null;
       })
       .catch((e) => {
-        error = e.message;
+        // A failed background revalidation still leaves stale cached
+        // results on screen -- only surface the error if there was
+        // nothing to fall back on.
+        if (hierarchy.length === 0) error = e.message;
       })
       .finally(() => {
         loading = false;
@@ -200,7 +212,21 @@
     <p class="status">Loading programs…</p>
   {:else if error}
     <p class="status error">{error}</p>
-    <button type="button" class="retry-btn" onclick={loadHierarchy}>Retry</button>
+    <button
+      type="button"
+      class="retry-btn"
+      onclick={() => {
+        // Only reachable with an empty hierarchy (see loadHierarchy's own
+        // catch), so there's no cached data a loading flash would cover
+        // up here -- unlike the automatic background revalidation this
+        // same function runs on mount, which deliberately leaves `loading`
+        // alone so a cached picker never flickers back to a spinner.
+        loading = true;
+        loadHierarchy();
+      }}
+    >
+      Retry
+    </button>
   {:else}
     <div class="program-search">
       <input

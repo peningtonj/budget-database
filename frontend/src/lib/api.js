@@ -291,21 +291,51 @@ export async function fetchMeasureCombined(ids) {
 // {programs: [...], outcomes: {...}} -- every (portfolio, agency, outcome,
 // program) row across EVERY ingested edition's own program_expenses
 // filing, fetched once and filtered client-side as each level of the
-// Portfolio -> Agency -> Outcome -> Program picker is chosen, the same
-// stale-while-revalidate-free "just filter the one payload" pattern
-// measure_list() already uses (a couple thousand rows, no need for four
-// separate round trips per pick). `outcomes` is a separate
-// "portfolio␟agency␟outcome_number" -> description lookup rather than
-// each program row carrying its own copy of that outcome's full
-// description text -- see program_hierarchy()'s own docstring; a program
-// row's outcome_number plus its own portfolio/agency is the lookup key,
-// same ␟-join ProgramPicker.svelte uses to build it.
+// Portfolio -> Agency -> Outcome -> Program picker is chosen (a couple
+// thousand rows, no need for four separate round trips per pick).
+// `outcomes` is a separate "portfolio␟agency␟outcome_number" ->
+// description lookup rather than each program row carrying its own copy
+// of that outcome's full description text -- see program_hierarchy()'s
+// own docstring; a program row's outcome_number plus its own portfolio/
+// agency is the lookup key, same ␟-join ProgramPicker.svelte uses to
+// build it.
+//
+// Cached in localStorage the same stale-while-revalidate way
+// fetchMeasureList()/cachedMeasureList() are -- this endpoint has shown
+// the most trouble reaching some networks of anything in the app (see
+// ProgramPicker.svelte's own retry handling), so once it's succeeded
+// once on a given browser, cachedProgramHierarchy() lets the "By
+// program" picker keep working from that last-known copy even on a
+// visit where the live fetch fails outright, rather than going back to
+// showing nothing.
+const PROGRAM_HIERARCHY_CACHE_KEY = "programHierarchyCache.v1";
+
 export async function fetchProgramHierarchy() {
   const res = await fetchWithRetry(`${API_BASE}/measures/program-hierarchy/`);
   if (!res.ok) {
     throw new Error(`Request failed: ${res.status}`);
   }
-  return res.json();
+  const data = await res.json();
+  try {
+    localStorage.setItem(PROGRAM_HIERARCHY_CACHE_KEY, JSON.stringify(data));
+  } catch {
+    // Caching is a pure optimization -- never worth failing the real
+    // fetch over (private browsing, a full/disabled localStorage, a
+    // payload that's grown past quota).
+  }
+  return data;
+}
+
+// Synchronous, possibly-null, possibly-stale -- see fetchProgramHierarchy's
+// own docstring. No expiry check: this data only changes on a redeploy,
+// same reasoning as cachedMeasureList().
+export function cachedProgramHierarchy() {
+  try {
+    const raw = localStorage.getItem(PROGRAM_HIERARCHY_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
 }
 
 // Every (outcome_number, program_name) combination across every ingested
