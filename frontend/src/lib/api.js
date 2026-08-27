@@ -48,6 +48,34 @@ async function fetchWithRetry(input, options = {}) {
   }
 }
 
+// Runs fn over every item, at most `limit` in flight at once, rather
+// than firing every item's own fn(item) simultaneously via a bare
+// Promise.all -- for a page that fans out to N (or, worse, 2N -- see
+// ProgramMeasuresPage.svelte's own use of this) requests at once,
+// summarising even a handful of programs meant a burst of a dozen-plus
+// concurrent requests to the same origin, hitting fetchWithRetry's own
+// automatic retries on TOP of that if any failed. That's exactly the
+// shape a corporate security appliance (or an origin's own rate
+// limiting) flags as anomalous and blocks -- confirmed in practice: one
+// such failed burst left the whole origin unreachable afterward, in
+// more than one browser, until some cooldown passed, not just the one
+// failed request. Capping concurrency keeps the same eventual
+// parallelism (still much faster than one-at-a-time) without ever
+// putting more than `limit` requests-in-flight (including each one's
+// own retries) against the origin at once.
+export async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 // A measure_id can resolve to a measure with no measure_impacts/
 // measure_programs row at all -- 18 of the 21 ingested BP2 editions
 // have no PBS Table 1.2 data behind them (see measure_list()'s own

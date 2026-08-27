@@ -1,7 +1,7 @@
 <script>
   import * as d3 from "d3";
   import { untrack } from "svelte";
-  import { fetchMeasuresByProgram, fetchProgramProfile } from "./api.js";
+  import { fetchMeasuresByProgram, fetchProgramProfile, mapWithConcurrency } from "./api.js";
   import { removeFromProgramTray } from "./programTray.svelte.js";
   import { formatDollars, formatMillionsCell } from "./format.js";
   import { adjustAmount, isInflationAdjustEnabled, CURRENT_FY } from "./inflation.svelte.js";
@@ -66,32 +66,37 @@
   // program's own reverse-index lookup is already a single fast call
   // once the server-side index is warm (see _build_program_reverse_index).
   //
-  // Fired in the SAME Promise.all as each selected program's own actuals
+  // Fired in the SAME pair as each selected program's own actuals
   // profile (program_profile()/fetchProgramProfile), not chained after
   // it -- the profile fetch only ever needs sel.program_name/portfolio,
   // already known upfront from currentSelections, never anything from
   // the measures response. Waiting for every measures call to finish
   // before starting any profile call was a pure, avoidable serial
-  // round-trip: harmless on localhost, but real added latency once
-  // network round-trip time is non-trivial (Render, a self-host) or the
-  // backend can only handle one request at a time -- exactly the "By
-  // program" summary's own worst case, since it's the one page that
-  // fires this many concurrent requests per load.
+  // round-trip.
+  //
+  // mapWithConcurrency (api.js), not a bare Promise.all, caps how many
+  // programs are in flight at once (each its own 2 requests) rather
+  // than firing all of them simultaneously -- confirmed in practice
+  // that summarising even a handful of programs (a burst of a
+  // dozen-plus concurrent requests, tripled again by fetchWithRetry's
+  // own retries on any failure) was enough to make a corporate network
+  // path treat the whole origin as unreachable afterward, not just the
+  // one request. See mapWithConcurrency's own docstring.
+  const PROGRAM_FETCH_CONCURRENCY = 3;
+
   let dataPromise = $derived.by(() => {
     retryToken;
-    return Promise.all(
-      currentSelections.map(async (sel) => {
-        const [program, profile] = await Promise.all([
-          fetchMeasuresByProgram(sel.program_name, sel.portfolio).catch(() => ({
-            program_name: sel.program_name,
-            portfolio: sel.portfolio,
-            measures: [],
-          })),
-          fetchProgramProfile(sel.program_name, sel.portfolio).catch(() => null),
-        ]);
-        return { program, profile };
-      }),
-    ).then((results) => {
+    return mapWithConcurrency(currentSelections, PROGRAM_FETCH_CONCURRENCY, async (sel) => {
+      const [program, profile] = await Promise.all([
+        fetchMeasuresByProgram(sel.program_name, sel.portfolio).catch(() => ({
+          program_name: sel.program_name,
+          portfolio: sel.portfolio,
+          measures: [],
+        })),
+        fetchProgramProfile(sel.program_name, sel.portfolio).catch(() => null),
+      ]);
+      return { program, profile };
+    }).then((results) => {
       const programs = results.map((r) => r.program);
       const profileByKey = new Map();
       results.forEach(({ program: p, profile }) => {
