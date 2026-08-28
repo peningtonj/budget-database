@@ -1,8 +1,14 @@
 <script>
   import * as d3 from "d3";
   import { untrack } from "svelte";
-  import { fetchMeasuresByProgram, fetchProgramProfile, mapWithConcurrency } from "./api.js";
-  import { removeFromProgramTray } from "./programTray.svelte.js";
+  import {
+    fetchMeasuresByProgram,
+    fetchProgramProfile,
+    fetchProgramHierarchy,
+    cachedProgramHierarchy,
+    mapWithConcurrency,
+  } from "./api.js";
+  import { addToProgramTray, removeFromProgramTray } from "./programTray.svelte.js";
   import { formatDollars, formatMillionsCell } from "./format.js";
   import { adjustAmount, isInflationAdjustEnabled, CURRENT_FY } from "./inflation.svelte.js";
 
@@ -18,6 +24,58 @@
   let { programSelections, onselect, onBack, onDeepDive } = $props();
 
   let currentSelections = $state(untrack(() => [...programSelections]));
+
+  // The full cross-edition program list (same data ProgramPicker.svelte
+  // browses), fetched here purely to spot OTHER programs sharing a name
+  // with one already selected -- e.g. a program that moved portfolios,
+  // where the user picked one era but not the other. Stale-while-
+  // revalidate via cachedProgramHierarchy(), same as ProgramPicker.svelte:
+  // program-hierarchy has shown more trouble reaching some networks than
+  // any other endpoint in the app, and this is a purely supplementary
+  // suggestion, not something worth an error state of its own -- a
+  // failed/stale fetch here just means fewer (or no) suggestions show,
+  // never blocks or breaks the page itself.
+  let fullHierarchy = $state(untrack(() => cachedProgramHierarchy()?.programs ?? []));
+  $effect(() => {
+    fetchProgramHierarchy()
+      .then((data) => {
+        fullHierarchy = data.programs;
+      })
+      .catch(() => {
+        // Best-effort only -- see above.
+      });
+  });
+
+  // Every (portfolio, program_name) elsewhere in the full hierarchy that
+  // shares a name (case-insensitively -- see groupedProfiles/
+  // groupedPrograms' own docstring on why exact-case matching would miss
+  // real candidates, the same source-workbook casing drift) with a
+  // currently-selected program, but isn't itself already selected.
+  // Deliberately independent of the "Combine programs with the same
+  // name" toggle below -- this is about discovering more programs to
+  // ADD, not how already-selected ones are displayed; adding one here
+  // and turning combine on both work together naturally.
+  let suggestedAdditions = $derived.by(() => {
+    const selectedNames = new Set(currentSelections.map((s) => s.program_name.toLowerCase()));
+    const selectedKeys = new Set(
+      currentSelections.map((s) => `${s.portfolio}␟${s.program_name.toLowerCase()}`),
+    );
+    const seen = new Set();
+    const suggestions = [];
+    for (const row of fullHierarchy) {
+      if (!row.program_name || !selectedNames.has(row.program_name.toLowerCase())) continue;
+      const key = `${row.portfolio}␟${row.program_name.toLowerCase()}`;
+      if (selectedKeys.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      suggestions.push(row);
+    }
+    return suggestions.sort((a, b) => a.program_name.localeCompare(b.program_name));
+  });
+
+  function addSuggestion(row) {
+    currentSelections = [...currentSelections, { program_name: row.program_name, portfolio: row.portfolio }];
+    addToProgramTray(row);
+  }
 
   // Bumped by the "Retry" button in the {:catch} block below to force
   // dataPromise to re-run after a transient failure (a "Failed to
@@ -355,6 +413,29 @@
       {/if}
     </header>
 
+    {#if suggestedAdditions.length > 0}
+      <div class="suggestion-box">
+        <p class="suggestion-note">
+          {suggestedAdditions.length} other program{suggestedAdditions.length === 1 ? "" : "s"} share
+          {suggestedAdditions.length === 1 ? "s" : ""} a name with one you've already selected -- often
+          the same program under a different portfolio or outcome (a machinery-of-government transfer).
+          Add it too?
+        </p>
+        <ul class="suggestion-list">
+          {#each suggestedAdditions as s (s.portfolio + '␟' + s.program_name)}
+            <li>
+              <span class="suggestion-name">
+                {s.program_name} <span class="suggestion-portfolio">({s.portfolio})</span>
+              </span>
+              <button type="button" class="suggestion-add" onclick={() => addSuggestion(s)}>
+                + Add
+              </button>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+
     {@const displayProfiles = groupedProfiles(profileByKey, combineSameName)}
     {@const displayPrograms = groupedPrograms(programs, combineSameName)}
 
@@ -576,6 +657,54 @@
   }
   .combine-note {
     margin-top: 0;
+  }
+  .suggestion-box {
+    background: var(--surface-accent, var(--border-faint));
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.9rem 1.1rem;
+    margin: 0 0 2rem;
+  }
+  .suggestion-note {
+    margin: 0 0 0.6rem;
+    font-size: 0.88rem;
+  }
+  .suggestion-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .suggestion-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+  .suggestion-name {
+    font-size: 0.88rem;
+    color: var(--text-h);
+  }
+  .suggestion-portfolio {
+    font-size: 0.8rem;
+    font-weight: 400;
+    color: var(--text-muted);
+  }
+  .suggestion-add {
+    flex-shrink: 0;
+    font: inherit;
+    font-size: 0.82rem;
+    padding: 0.3rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-h);
+    cursor: pointer;
+  }
+  .suggestion-add:hover {
+    border-color: var(--text-muted);
   }
   h2 {
     font-size: 1rem;
