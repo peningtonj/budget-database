@@ -84,6 +84,29 @@ def _portfolio_history(portfolio):
     return _PORTFOLIO_VARIANTS.get(canon, {canon, portfolio})
 
 
+def _program_number_sort_key(program_number):
+    """Numeric, not alphabetical, ordering for dotted program numbers
+    (e.g. "1.10" -> (1, 10), sorting after "1.9" -> (1, 9), not before
+    it the way plain string comparison would -- confirmed real cases in
+    the data, e.g. DAFF's own Outcome 1 runs "1.1".."1.13"). Each segment
+    is wrapped as (0, int) when numeric or (1, str) when it isn't (none
+    seen in this dataset, but every program_number here is user-typed
+    free text in some source workbook, so don't assume it always will
+    be) -- keeps every position comparably typed so sorted() can't raise
+    a str-vs-int TypeError partway through, with any non-numeric segment
+    just sorting after numeric ones at that position.
+    """
+    if not program_number:
+        return ((0, 0),)
+    parts = []
+    for part in program_number.split("."):
+        try:
+            parts.append((0, int(part)))
+        except ValueError:
+            parts.append((1, part))
+    return tuple(parts)
+
+
 def _budget_year(edition):
     """'2024-25 MYEFO' / '2024-25 Budget' -> '2024-25' -- the year
     program_expenses.budget_year uses, to resolve a program's name/outcome
@@ -788,7 +811,12 @@ def _build_program_hierarchy():
 
     programs = sorted(
         seen.values(),
-        key=lambda r: (r["portfolio"], r["agency"], r["outcome_number"], r["program_number"]),
+        key=lambda r: (
+            r["portfolio"],
+            r["agency"],
+            r["outcome_number"],
+            _program_number_sort_key(r["program_number"]),
+        ),
     )
     outcomes = {
         OUTCOME_KEY_SEP.join([portfolio, agency, str(outcome_number)]): description
@@ -907,7 +935,9 @@ def program_outcome_audit(request):
                 if g["outcome_descriptions"] else None
             ),
             "program_name": program_name,
-            "program_numbers": sorted(n for n in g["program_numbers"] if n),
+            "program_numbers": sorted(
+                (n for n in g["program_numbers"] if n), key=_program_number_sort_key
+            ),
             "portfolios": sorted(p for p in g["portfolios"] if p),
             "agencies": sorted(a for a in g["agencies"] if a),
             "years": years,

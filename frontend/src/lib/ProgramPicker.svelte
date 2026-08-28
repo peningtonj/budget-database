@@ -7,6 +7,7 @@
     removeFromProgramTray,
     clearProgramTray,
   } from "./programTray.svelte.js";
+  import { compareProgramNumbers } from "./naturalSort.js";
 
   let { onSummarise } = $props();
 
@@ -159,7 +160,7 @@
               r.agency === selectedAgency &&
               r.outcome_number === selectedOutcomeNumber,
           )
-          .sort((a, b) => a.program_number.localeCompare(b.program_number))
+          .sort((a, b) => compareProgramNumbers(a.program_number, b.program_number))
       : [],
   );
 
