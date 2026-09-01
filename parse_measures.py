@@ -502,6 +502,38 @@ def _uses_sparse_totals(rows):
     return (total / category) < 0.2
 
 
+# Confirmed via direct inspection: a handful of individual files use the
+# same "no per-measure Total" convention as the general ratio-based case
+# above, but for only PART of their own payment-measures section --
+# diluting the whole-sheet ratio below the 0.2 threshold even though the
+# specific run of measures affected needs the same relaxed agency-vs-
+# new-measure disambiguation. Path suffixes (relative to data/pbs/Budget,
+# matching the `rel` this module's own callers already use), not a
+# ratio -- each one verified individually by cross-checking the
+# recovered measures' own summed amounts against that sheet's printed
+# grand-total row before being added here.
+KNOWN_SPARSE_TOTALS_FILES = {
+    # Six consecutive single-line payment measures (Fighting Online
+    # Scams, Murray Darling Basin - water market reform, Plan for
+    # Cheaper Child Care, Powering Australia - Community Batteries for
+    # Household Solar, Savings from External Labour..., Support for the
+    # Australian Energy Regulator..., Supporting the Supply of
+    # Australian Gas) share one combined running total instead of each
+    # having its own -- without this, only the first of the six
+    # (Fighting Online Scams) parses, and even that one gets the NEXT
+    # measure's own title row mis-swallowed as a bogus second "agency"
+    # name for it. Summed recovered amounts exactly match the sheet's
+    # own "Total payment measures" row (0, 4961, 16622, 10305, 11966 by
+    # fiscal year).
+    "2022-23 October Budget/Treasury/ACCC October 2022-23 PBS.xlsx",
+}
+
+
+def _is_known_sparse_totals_file(path):
+    normalized = str(path).replace("\\", "/")
+    return any(normalized.endswith(suffix) for suffix in KNOWN_SPARSE_TOTALS_FILES)
+
+
 def parse_measures_sheet(rows, col_order, default_agency=None, sparse_totals=False):
     """Parse one measures sheet's rows into a flat list of impact records.
 
@@ -1033,7 +1065,7 @@ def parse_workbook_measures(path):
         # silently breaking any join between the two tables on `agency`.
         # Using the same derivation as program_expenses keeps them joinable.
         default_agency = clean_agency(path)
-        sparse_totals = _uses_sparse_totals(rows)
+        sparse_totals = _uses_sparse_totals(rows) or _is_known_sparse_totals_file(path)
         for rec in parse_measures_sheet(
             rows, col_order, default_agency=default_agency, sparse_totals=sparse_totals
         ):
