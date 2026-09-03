@@ -57,8 +57,15 @@
     resolving = false;
   }
 
-  function selectMeasure(id, name, edition) {
-    viewStack.push({ type: "measure", id, name, edition });
+  // highlightQuery: only set when arriving from SearchPage's own "Measure
+  // text" mode (see its own onselect call for why not name/topic mode) --
+  // deliberately NOT reflected in the URL, the same "ad hoc, not a
+  // bookmark" treatment every other view-stack entry already gets here.
+  // It's this one navigation's own context, not part of the measure's
+  // identity: reloading a shared ?m= link, or reaching the same measure
+  // any other way, correctly shows it unhighlighted.
+  function selectMeasure(id, name, edition, highlightQuery = null) {
+    viewStack.push({ type: "measure", id, name, edition, highlightQuery });
     history.pushState({ id }, "", `?${new URLSearchParams({ m: id })}`);
   }
 
@@ -145,6 +152,7 @@
       <MeasurePage
         name={currentView.name}
         edition={currentView.edition}
+        highlightQuery={currentView.highlightQuery}
         onselect={selectMeasure}
         onDeepDive={viewProgramDeepDive}
       />

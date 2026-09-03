@@ -8,7 +8,7 @@
   import MeasureText from "./MeasureText.svelte";
   import { isInTray, toggleInTray } from "./measureTray.svelte.js";
 
-  let { name, edition, onselect, onDeepDive } = $props();
+  let { name, edition, highlightQuery = null, onselect, onDeepDive } = $props();
 
   // null means there's no measure_impacts/measure_programs row for this
   // (name, edition) -- true for 18 of the 21 ingested BP2 editions (see
@@ -109,7 +109,7 @@
             <ImpactTable impacts={detail.impacts} />
           </section>
 
-          <MeasureText {name} edition={detail.edition} {onselect} />
+          <MeasureText {name} edition={detail.edition} {highlightQuery} {onselect} />
 
           <section>
             <h2>Programs touched</h2>
@@ -170,7 +170,7 @@
         <h1>{name}</h1>
       </header>
       <div class="col-text text-only">
-        <MeasureText {name} {edition} hasFinancialData={false} {onselect} />
+        <MeasureText {name} {edition} hasFinancialData={false} {highlightQuery} {onselect} />
       </div>
     {/if}
   {:catch error}

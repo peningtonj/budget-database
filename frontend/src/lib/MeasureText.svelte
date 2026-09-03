@@ -7,9 +7,28 @@
   // see measure_list()'s own docstring) -- changes the framing text and
   // shows the portfolio here, since there's no PBS-derived portfolio
   // badge elsewhere on the page for this measure in that case.
-  let { name, edition, hasFinancialData = true, onselect } = $props();
+  //
+  // highlightQuery: set only when arriving from SearchPage's own
+  // "Measure text" mode (App.svelte's selectMeasure) -- the exact same
+  // substring measure_text_search() itself matched against (an
+  // icontains, so a plain case-insensitive substring split below finds
+  // the identical occurrences, not just a best-effort approximation).
+  let { name, edition, hasFinancialData = true, highlightQuery = null, onselect } = $props();
 
   let textPromise = $derived(fetchMeasureText(name, edition));
+
+  // Splits `text` on every case-insensitive occurrence of `query`,
+  // returning alternating {text, match} segments (unmatched, matched,
+  // unmatched, ...) -- `text` keeps the SOURCE's own original casing;
+  // only the matching is case-insensitive. A regex special character in
+  // the query (e.g. a literal "(" from a pasted snippet) is escaped so
+  // it's matched literally, not as regex syntax.
+  function highlightSegments(text, query) {
+    if (!query) return [{ text, match: false }];
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`(${escaped})`, "gi");
+    return text.split(re).map((part, i) => ({ text: part, match: i % 2 === 1 }));
+  }
 
   // Components come back as a flat, ordinal-ordered list mixing prose
   // paragraphs (marker "text") with bullets ("dot"/"dash") in the exact
@@ -52,6 +71,12 @@
   }
 </script>
 
+{#snippet highlighted(str)}
+  {#each highlightSegments(str, highlightQuery) as seg}
+    {#if seg.match}<mark>{seg.text}</mark>{:else}{seg.text}{/if}
+  {/each}
+{/snippet}
+
 {#await textPromise then text}
   {#if text}
     <section class="measure-text">
@@ -90,16 +115,16 @@
 
       {#each groupBlocks(nestComponents(text.components)) as block}
         {#if block.type === "text"}
-          <p class="prose">{block.text}</p>
+          <p class="prose">{@render highlighted(block.text)}</p>
         {:else}
           <ul class="components">
             {#each block.items as c}
               <li>
-                {c.text}
+                {@render highlighted(c.text)}
                 {#if c.children.length}
                   <ul class="subcomponents">
                     {#each c.children as sub}
-                      <li>{sub.text}</li>
+                      <li>{@render highlighted(sub.text)}</li>
                     {/each}
                   </ul>
                 {/if}
@@ -174,6 +199,16 @@
 <style>
   .measure-text {
     margin-bottom: 2.5rem;
+  }
+  /* Same amber tint ProgramOutcomeAuditPage.svelte's own .gap-cell uses
+     for "this is the thing that matters here" -- color: inherit rather
+     than the browser default (black text) so it stays readable in dark
+     mode. */
+  mark {
+    background: rgba(217, 119, 6, 0.3);
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 0.1em;
   }
   h2 {
     font-size: 1rem;

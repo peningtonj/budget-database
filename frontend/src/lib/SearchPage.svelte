@@ -332,7 +332,25 @@
               onchange={() => toggleInTray(m)}
               aria-label={`Add ${m.measure_name} to summary`}
             />
-            <button class="result" onclick={() => onselect(m.measure_id, m.measure_name, m.edition)}>
+            <button
+              class="result"
+              onclick={() =>
+                onselect(
+                  m.measure_id,
+                  m.measure_name,
+                  m.edition,
+                  // Only "Measure text" mode's own query is a literal
+                  // substring of the write-up (measure_text_search()'s
+                  // own icontains match) -- name mode's query never
+                  // searches the write-up at all, and topic mode's is a
+                  // semantic match with no guarantee the literal words
+                  // appear anywhere in the text, so highlighting either
+                  // of those on the measure page would be misleading at
+                  // best (searching for a word that's nowhere on the
+                  // page) or outright wrong.
+                  mode === "text" ? query.trim() : null,
+                )}
+            >
               <span class="name">{m.measure_name}</span>
               {#if m.snippet}
                 <p class="snippet">{m.snippet}</p>
