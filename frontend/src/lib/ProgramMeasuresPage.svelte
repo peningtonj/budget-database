@@ -67,6 +67,16 @@
     addToProgramTray(row);
   }
 
+  // Adds every currently-suggested row in one go, not just one at a
+  // time -- reads suggestedAdditions directly (rather than taking rows
+  // as an argument) so it always adds whatever's still showing at the
+  // moment it's clicked, even though clicking one shrinks that list.
+  function addAllSuggestions() {
+    for (const row of suggestedAdditions) {
+      addSuggestion(row);
+    }
+  }
+
   // Bumped by the "Retry" button in the {:catch} block below to force
   // dataPromise to re-run after a transient failure (a "Failed to
   // fetch" that outlasted fetchWithRetry's own retries, e.g. a slow
@@ -405,12 +415,19 @@
 
     {#if suggestedAdditions.length > 0}
       <div class="suggestion-box">
-        <p class="suggestion-note">
-          {suggestedAdditions.length} other program{suggestedAdditions.length === 1 ? "" : "s"} share
-          {suggestedAdditions.length === 1 ? "s" : ""} a name with one you've already selected -- often
-          the same program under a different portfolio or outcome (a machinery-of-government transfer).
-          Add it too?
-        </p>
+        <div class="suggestion-header">
+          <p class="suggestion-note">
+            {suggestedAdditions.length} other program{suggestedAdditions.length === 1 ? "" : "s"} share
+            {suggestedAdditions.length === 1 ? "s" : ""} a name with one you've already selected -- often
+            the same program under a different portfolio or outcome (a machinery-of-government transfer).
+            Add {suggestedAdditions.length === 1 ? "it" : "them"} too?
+          </p>
+          {#if suggestedAdditions.length > 1}
+            <button type="button" class="suggestion-add-all" onclick={addAllSuggestions}>
+              + Add all {suggestedAdditions.length}
+            </button>
+          {/if}
+        </div>
         <ul class="suggestion-list">
           {#each suggestedAdditions as s (s.portfolio + '␟' + s.program_name)}
             <li>
@@ -655,9 +672,31 @@
     padding: 0.9rem 1.1rem;
     margin: 0 0 2rem;
   }
+  .suggestion-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+  }
   .suggestion-note {
     margin: 0 0 0.6rem;
     font-size: 0.88rem;
+  }
+  .suggestion-add-all {
+    flex-shrink: 0;
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 600;
+    padding: 0.3rem 0.7rem;
+    border: 1px solid var(--text-h);
+    border-radius: 6px;
+    background: var(--text-h);
+    color: var(--bg);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .suggestion-add-all:hover {
+    opacity: 0.9;
   }
   .suggestion-list {
     list-style: none;
