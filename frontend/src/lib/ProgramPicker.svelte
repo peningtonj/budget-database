@@ -1,5 +1,4 @@
 <script>
-  import { fetchProgramHierarchy, cachedProgramHierarchy } from "./api.js";
   import {
     programTray,
     isInProgramTray,
@@ -8,53 +7,32 @@
     clearProgramTray,
   } from "./programTray.svelte.js";
   import { compareProgramNumbers } from "./naturalSort.js";
+  import {
+    programHierarchyState,
+    loadProgramHierarchyOnce,
+    retryProgramHierarchy,
+  } from "./programHierarchy.svelte.js";
 
   let { onSummarise } = $props();
 
-  // Stale-while-revalidate, same pattern as SearchPage.svelte's own use
-  // of cachedMeasureList()/fetchMeasureList() -- a cached copy, if any,
-  // populates the picker synchronously so it's usable immediately, not
-  // blocked behind a slow/proxied round trip, while the real fetch below
-  // quietly confirms or replaces it. program-hierarchy has shown the
-  // most trouble reaching some networks of any endpoint in the app, so
-  // this is the one place in the app where falling back to a possibly-
-  // stale copy matters most: better a picker built from last redeploy's
-  // program list than a blank one.
-  const cached = cachedProgramHierarchy();
-  let hierarchy = $state(cached?.programs ?? []);
+  // Shared across every consumer -- see programHierarchy.svelte.js's own
+  // docstring for why this is one session-wide fetch, not one per
+  // component mount. loadProgramHierarchyOnce() is idempotent: it only
+  // actually fires a request the first time anything in the app calls
+  // it this session.
+  loadProgramHierarchyOnce();
+  let hierarchy = $derived(programHierarchyState.programs);
   // outcome_description keyed by the same "portfolio␟agency␟outcome_number"
   // string program_hierarchy() itself joins with -- sent once per unique
   // outcome rather than repeated on every one of that outcome's own
   // program rows (see that endpoint's own docstring for why).
-  let outcomeDescriptions = $state(cached?.outcomes ?? {});
-  let loading = $state(cached === null);
-  let error = $state(null);
+  let outcomeDescriptions = $derived(programHierarchyState.outcomes);
+  let loading = $derived(programHierarchyState.loading);
+  let error = $derived(programHierarchyState.error);
 
   function outcomeKey(portfolio, agency, outcomeNumber) {
     return `${portfolio}␟${agency}␟${outcomeNumber}`;
   }
-
-  function loadHierarchy() {
-    fetchProgramHierarchy()
-      .then((data) => {
-        hierarchy = data.programs;
-        outcomeDescriptions = data.outcomes;
-        error = null;
-      })
-      .catch((e) => {
-        // A failed background revalidation still leaves stale cached
-        // results on screen -- only surface the error if there was
-        // nothing to fall back on.
-        if (hierarchy.length === 0) error = e.message;
-      })
-      .finally(() => {
-        loading = false;
-      });
-  }
-
-  $effect(() => {
-    loadHierarchy();
-  });
 
   // A cascading drill-down, one level revealed at a time, rather than
   // four dropdowns -- an outcome's own description (often a full
@@ -216,15 +194,7 @@
     <button
       type="button"
       class="retry-btn"
-      onclick={() => {
-        // Only reachable with an empty hierarchy (see loadHierarchy's own
-        // catch), so there's no cached data a loading flash would cover
-        // up here -- unlike the automatic background revalidation this
-        // same function runs on mount, which deliberately leaves `loading`
-        // alone so a cached picker never flickers back to a spinner.
-        loading = true;
-        loadHierarchy();
-      }}
+      onclick={retryProgramHierarchy}
     >
       Retry
     </button>

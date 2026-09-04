@@ -1,14 +1,9 @@
 <script>
   import * as d3 from "d3";
   import { untrack } from "svelte";
-  import {
-    fetchMeasuresByProgram,
-    fetchProgramProfile,
-    fetchProgramHierarchy,
-    cachedProgramHierarchy,
-    mapWithConcurrency,
-  } from "./api.js";
+  import { fetchMeasuresByProgram, fetchProgramProfile, mapWithConcurrency } from "./api.js";
   import { addToProgramTray, removeFromProgramTray } from "./programTray.svelte.js";
+  import { programHierarchyState, loadProgramHierarchyOnce } from "./programHierarchy.svelte.js";
   import { formatDollars, formatMillionsCell } from "./format.js";
   import { adjustAmount, isInflationAdjustEnabled, CURRENT_FY } from "./inflation.svelte.js";
 
@@ -26,25 +21,20 @@
   let currentSelections = $state(untrack(() => [...programSelections]));
 
   // The full cross-edition program list (same data ProgramPicker.svelte
-  // browses), fetched here purely to spot OTHER programs sharing a name
+  // browses), read here purely to spot OTHER programs sharing a name
   // with one already selected -- e.g. a program that moved portfolios,
-  // where the user picked one era but not the other. Stale-while-
-  // revalidate via cachedProgramHierarchy(), same as ProgramPicker.svelte:
-  // program-hierarchy has shown more trouble reaching some networks than
-  // any other endpoint in the app, and this is a purely supplementary
-  // suggestion, not something worth an error state of its own -- a
-  // failed/stale fetch here just means fewer (or no) suggestions show,
-  // never blocks or breaks the page itself.
-  let fullHierarchy = $state(untrack(() => cachedProgramHierarchy()?.programs ?? []));
-  $effect(() => {
-    fetchProgramHierarchy()
-      .then((data) => {
-        fullHierarchy = data.programs;
-      })
-      .catch(() => {
-        // Best-effort only -- see above.
-      });
-  });
+  // where the user picked one era but not the other. Shared with
+  // ProgramPicker.svelte via programHierarchy.svelte.js rather than its
+  // own independent fetch -- see that module's own docstring: this used
+  // to fire a second, redundant live request to the one endpoint that's
+  // shown the most trouble reaching some networks of anything in the
+  // app, on top of whatever ProgramPicker itself already fetched to get
+  // here. loadProgramHierarchyOnce() is a no-op if that fetch (or an
+  // earlier call to it from this same page) already started. A failed
+  // fetch just means fewer (or no) suggestions show below -- never an
+  // error state of its own, never blocks or breaks the rest of the page.
+  loadProgramHierarchyOnce();
+  let fullHierarchy = $derived(programHierarchyState.programs);
 
   // Every (portfolio, program_name) elsewhere in the full hierarchy that
   // shares a name (case-insensitively -- see groupedProfiles/
