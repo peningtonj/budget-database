@@ -4,6 +4,8 @@ A searchable database and web app for Australian federal budget data, built
 from the **Portfolio Budget Statements (PBS/PAES)** and **Budget Paper No. 2
 (BP2)** across every Budget and MYEFO edition from 2014-15 to 2026-27.
 
+An instance of the site is hosted at https://budget-frontend-5qqf.onrender.com/
+
 It answers questions the published documents make hard to ask:
 
 - **Program spending over time** — Portfolio → Agency → Outcome → Program,
