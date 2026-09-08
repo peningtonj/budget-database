@@ -33,7 +33,9 @@ import sqlite3
 import chromadb
 from chromadb.utils import embedding_functions
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+# Repo root (this file lives in pipeline/); programs.db and chroma_measures/
+# sit one level up, where the Django backend also reads them.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(ROOT, "programs.db")
 CHROMA_PATH = os.path.join(ROOT, "chroma_measures")
 COLLECTION_NAME = "measure_text"

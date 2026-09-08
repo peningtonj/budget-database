@@ -21,7 +21,9 @@ from patches import apply_patches
 from patches.agency_name_overrides import OVERRIDES as AGENCY_NAME_OVERRIDES
 from portfolio_aliases import canon_portfolio
 
-ROOT = "/Users/josephpenington/budget/budget-database"
+# Repo root (this file lives in pipeline/). data/, programs.db and
+# chroma_measures/ all sit here, one level up.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUDGET_DIR = os.path.join(ROOT, "data/pbs/Budget")
 DB_PATH = os.path.join(ROOT, "programs.db")
 

@@ -62,7 +62,8 @@ from parse_measures import parse_workbook_measures
 from build_db import clean_agency
 from measure_id import MeasureIdAssigner
 
-ROOT = "/Users/josephpenington/budget/budget-database"
+# Repo root (this file lives in pipeline/); data/ and programs.db sit one up.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(ROOT, "programs.db")
 
 # (root_dir, edition_label)

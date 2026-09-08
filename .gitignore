@@ -8,17 +8,17 @@ backend/staticfiles/
 
 # Raw source PDFs/Excel (833M) -- only needed to regenerate the two build
 # artifacts below, never read at runtime. Kept local-only; see the data
-# section of KNOWN_GAPS.md (and the deploy notes) for how to regenerate
-# programs.db/chroma_measures/ from this if it's ever missing.
+# section of docs/KNOWN_GAPS.md (and the deploy notes) for how to
+# regenerate programs.db/chroma_measures/ from this if it's ever missing.
 data/
 
 # Build artifacts (programs.db 39M, chroma_measures/ 87M) -- deliberately
 # NOT committed. Deployed by fetching a packaged copy from a GitHub
 # Release at build time (see render.yaml) rather than versioning a large
-# binary DB in git history. Regenerate locally via:
-#   python3 build_db.py && python3 build_measures_db.py &&
-#   python3 build_bp2_db.py && python3 build_agency_aliases.py &&
-#   backend/.venv/bin/python build_measure_embeddings.py
+# binary DB in git history. Regenerate locally (from the repo root) via:
+#   python3 pipeline/build_db.py && python3 pipeline/build_measures_db.py &&
+#   python3 pipeline/build_bp2_db.py && python3 pipeline/build_agency_aliases.py &&
+#   backend/.venv/bin/python pipeline/build_measure_embeddings.py
 programs.db
 chroma_measures/
 chroma_measures.tar.gz
@@ -26,6 +26,11 @@ chroma_measures.tar.gz
 # Python bytecode/caches
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# One-off local export for manual data-quality review, regenerated on
+# demand via `python3 export_program_audit.py` -- never read at runtime.
+program_data_audit.xlsx
 
 # Editor/OS/tooling cruft
 .DS_Store

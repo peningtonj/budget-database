@@ -23,14 +23,14 @@ from .serializers import MeasureImpactSerializer
 from .related_programs import find_related
 
 # Portfolio canonicalization (PORTFOLIO_ALIASES, canon_portfolio) lives in
-# the repo-root portfolio_aliases module, not here -- build_db.py (a
-# standalone script with no Django dependency) needs the exact same
-# lookup for normalize_program_name_casing(), and this module's own
-# Django-only imports rule out the reverse direction. The repo root isn't
-# on sys.path by default under Django (only this app's own package is),
-# so it's added explicitly -- backend/measures/views.py -> backend/
-# measures -> backend -> repo root is parents[2].
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# the pipeline/portfolio_aliases module, not here -- build_db.py (a
+# standalone ingestion script with no Django dependency) needs the exact
+# same lookup for normalize_program_name_casing(), and this module's own
+# Django-only imports rule out the reverse direction. pipeline/ isn't on
+# sys.path by default under Django (only this app's own package is), so
+# it's added explicitly -- backend/measures/views.py -> backend/measures
+# -> backend -> repo root is parents[2], then into pipeline/.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pipeline"))
 from portfolio_aliases import (
     PORTFOLIO_ALIASES as _PORTFOLIO_ALIASES,
     canon_portfolio as _canon_portfolio,

@@ -22,11 +22,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 if [ ! -f programs.db ]; then
-  echo "programs.db not found -- run the build_*.py pipeline first (see KNOWN_GAPS.md)." >&2
+  echo "programs.db not found -- run the pipeline/build_*.py steps first (see docs/KNOWN_GAPS.md)." >&2
   exit 1
 fi
 if [ ! -d chroma_measures ]; then
-  echo "chroma_measures/ not found -- run build_measure_embeddings.py first." >&2
+  echo "chroma_measures/ not found -- run pipeline/build_measure_embeddings.py first." >&2
   exit 1
 fi
 

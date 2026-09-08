@@ -62,7 +62,7 @@ be needed to walk the `Table 12` / `Table 13+` structure. Not yet built.
   itself is corrupt (not a valid `.xlsx`/zip archive), can't be opened at
   all.
 
-Run `python3 build_db.py` and check the `ZERO-RECORD FILES` /
+Run `python3 pipeline/build_db.py` and check the `ZERO-RECORD FILES` /
 `ERROR FILES` sections of its output for the current exact list — it's
 easy to reduce it further, but this list reflects the state as of this
 writing.
@@ -736,7 +736,7 @@ portfolios/agencies/`has_financial_data` the same way
 the same debounced-server-search plumbing as the existing text mode.
 
 **Rebuilding the index:** run `backend/.venv/bin/python
-build_measure_embeddings.py` (needs that specific venv, since that's
+pipeline/build_measure_embeddings.py` (needs that specific venv, since that's
 the same one the Django server reads the collection from at query
 time) any time `measure_text` changes -- a new BP2 edition ingested, a
 text-parsing fix, etc. Safe to re-run: `upsert()`s by `measure_id`, so

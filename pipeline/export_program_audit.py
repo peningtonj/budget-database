@@ -14,6 +14,7 @@ Portfolio canonicalization is imported directly from the repo-root
 portfolio_aliases module (shared with backend/measures/views.py and
 build_db.py -- no more per-script copy to keep in sync).
 """
+import os
 import sqlite3
 from collections import defaultdict, Counter
 
@@ -22,8 +23,11 @@ from openpyxl.utils import get_column_letter
 
 from portfolio_aliases import canon_portfolio
 
-DB_PATH = "programs.db"
-OUT_PATH = "program_data_audit.xlsx"
+# Repo root (this file lives in pipeline/); programs.db sits one level up.
+# The .xlsx is written there too, where .gitignore already excludes it.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(_ROOT, "programs.db")
+OUT_PATH = os.path.join(_ROOT, "program_data_audit.xlsx")
 YEARS = [f"{y}-{(y + 1) % 100:02d}" for y in range(2014, 2026)]  # 2014-15 .. 2025-26
 
 

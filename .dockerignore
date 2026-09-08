@@ -1,5 +1,7 @@
 .git
 frontend
+tests
+docs
 data
 programs.db
 chroma_measures
