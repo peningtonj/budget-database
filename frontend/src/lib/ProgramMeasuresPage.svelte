@@ -382,6 +382,22 @@
       (i) => adjustAmount(i.amount_thousands, i.fiscal_year),
     );
   }
+
+  // Total financial impact of a measure, summed across every fiscal year
+  // and direction (payments and receipts alike) -- the same figure the
+  // measure-list row itself displays, just combined into one sortable
+  // number. Absolute value so a large savings measure (negative
+  // amount_thousands) ranks by its size, not buried near zero net.
+  function measureTotalImpact(m) {
+    return d3.sum(m.impacts, (i) => Math.abs(adjustAmount(i.amount_thousands, i.fiscal_year)));
+  }
+
+  // Biggest-impact measures first -- a non-mutating copy, since
+  // program.measures is also read elsewhere (programImpactTable) in
+  // whatever order the API returned it.
+  function sortedByImpact(measures) {
+    return [...measures].sort((a, b) => measureTotalImpact(b) - measureTotalImpact(a));
+  }
 </script>
 
 <div class="page">
@@ -608,7 +624,7 @@
               <span class="disclosure">▸</span> Show the {program.measures.length} measure{program.measures.length === 1 ? "" : "s"}
             </summary>
             <ul class="measure-list">
-              {#each program.measures as m (m.measure_id)}
+              {#each sortedByImpact(program.measures) as m (m.measure_id)}
                 <li>
                   <button type="button" class="measure-name" onclick={() => onselect(m.measure_id, m.measure_name, m.edition)}>
                     {m.measure_name}
