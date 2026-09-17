@@ -1,12 +1,23 @@
 """
-Build the PBS Programs SQLite database from data/pbs/Budget.
+Build the PBS Programs SQLite database from data/pbs/Budget and
+data/pbs/MYEFO.
 
 Directory layout:
     data/pbs/Budget/<EDITION>/<PORTFOLIO>/<agency workbook>.xlsx
+    data/pbs/MYEFO/<EDITION>/<PORTFOLIO>/<agency PAES workbook>.xlsx
+    (2017-18 MYEFO alone has no <PORTFOLIO> layer -- its files sit flat in
+    the edition root; see _myefo_portfolio_fallback_index.)
 
 Each Budget PBS reports an "Estimated actual" for the year prior to its budget
-year, plus the budget-year figure and forward estimates. We store every
-column as a tidy long table so the estimated-actual series is one filter away.
+year, plus the budget-year figure and forward estimates. Each PAES (a MYEFO's
+own per-agency workbook) instead reports that same prior year's now-settled
+"Actual expenses" (also stored as estimated_actual -- same authoritative
+figure, just labelled differently once the year has actually closed), a
+"Revised estimate" for its own current year (a mid-year update to that
+year's Budget-time forecast, stored as revised_estimate -- see
+parse_pbs.col_types), and forward estimates beyond that. We store every
+column as a tidy long table so the estimated-actual series is one filter
+away.
 """
 import argparse
 import os
@@ -25,6 +36,7 @@ from portfolio_aliases import canon_portfolio
 # chroma_measures/ all sit here, one level up.
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUDGET_DIR = os.path.join(ROOT, "data/pbs/Budget")
+MYEFO_DIR = os.path.join(ROOT, "data/pbs/MYEFO")
 DB_PATH = os.path.join(ROOT, "programs.db")
 
 AGENCY_STRIP = re.compile(
@@ -119,23 +131,90 @@ def budget_year(edition):
     return m.group(1).replace("–", "-") if m else edition
 
 
-def iter_files():
-    exts = ("*.xlsx", "*.XLSX", "*.xls", "*.xlsm", "*.xlsb")
-    for edition in sorted(os.listdir(BUDGET_DIR)):
-        edir = os.path.join(BUDGET_DIR, edition)
+_EXTS = ("*.xlsx", "*.XLSX", "*.xls", "*.xlsm", "*.xlsb")
+
+
+def _glob_workbooks(directory):
+    files = []
+    for pat in _EXTS:
+        files += glob.glob(os.path.join(directory, pat))
+    return sorted(f for f in set(files) if not os.path.basename(f).startswith(("~$", ".")))
+
+
+def _myefo_portfolio_fallback_index(myefo_edition_dir):
+    """2017-18 MYEFO alone has no portfolio subdirectory layer at all --
+    its agency files sit flat in the edition root, unlike every other
+    Budget or MYEFO edition (see build_measures_db.py's own
+    _portfolio_fallback_index, which the measures pipeline already relies
+    on for this exact same layout gap). Falls back to that same fiscal
+    year's own Budget edition's directory structure for a portfolio label,
+    since an agency practically always sits in the same portfolio a few
+    months later at MYEFO time as it did at Budget time within the one
+    year. Returns {agency_short_name: portfolio}, or {} if there's no
+    matching Budget directory to fall back to (portfolio is a display/
+    lookup field here, not part of program_expenses's own identity)."""
+    budget_edition_dir = myefo_edition_dir.replace("/MYEFO/", "/Budget/").replace(" MYEFO", " Budget")
+    if not os.path.isdir(budget_edition_dir):
+        return {}
+    index = {}
+    for portfolio in sorted(os.listdir(budget_edition_dir)):
+        pdir = os.path.join(budget_edition_dir, portfolio)
+        if not os.path.isdir(pdir):
+            continue
+        for f in _glob_workbooks(pdir):
+            index[clean_agency(f)] = clean_portfolio(portfolio)
+    return index
+
+
+def _iter_root(root_dir, use_fallback_for_stray_files=False):
+    """Yield (edition, portfolio, path) for every workbook under one root
+    (BUDGET_DIR or MYEFO_DIR) -- portfolio-nested layout, plus (only when
+    `use_fallback_for_stray_files`) any workbook that sits directly in the
+    edition root, via the fallback portfolio lookup: MYEFO_DIR's own flat
+    2017-18-MYEFO layout (every file is "stray" -- no portfolio
+    subdirectory layer at all), and 2022-23 MYEFO's own mix of the two (its
+    DHOR workbook sits loose in the edition root alongside every other
+    agency's normal Defence/, Social Services/, ... subdirectories).
+
+    BUDGET_DIR has its own handful of stray top-level files (2023-24
+    Budget's DHoR/DPS/PBO/Senate workbooks, 2024-25 Budget's DHR one) --
+    left alone here (use_fallback_for_stray_files defaults to False)
+    rather than opportunistically swept up the same way: unlike a MYEFO
+    edition, there's no corresponding same-year Budget directory to derive
+    a real portfolio from, so `_myefo_portfolio_fallback_index` would only
+    ever fall back to an empty portfolio for them -- a pre-existing gap,
+    not something this change is scoped to fix.
+    """
+    for edition in sorted(os.listdir(root_dir)):
+        edir = os.path.join(root_dir, edition)
         if not os.path.isdir(edir):
             continue
-        for portfolio in sorted(os.listdir(edir)):
-            pdir = os.path.join(edir, portfolio)
+        if use_fallback_for_stray_files:
+            fallback = _myefo_portfolio_fallback_index(edir)
+            for f in _glob_workbooks(edir):
+                yield edition, fallback.get(clean_agency(f), ""), f
+        for entry in sorted(os.listdir(edir)):
+            pdir = os.path.join(edir, entry)
             if not os.path.isdir(pdir):
                 continue
-            files = []
-            for pat in exts:
-                files += glob.glob(os.path.join(pdir, pat))
-            for f in sorted(set(files)):
-                if os.path.basename(f).startswith(("~$", ".")):
-                    continue
-                yield edition, clean_portfolio(portfolio), f
+            for f in _glob_workbooks(pdir):
+                yield edition, clean_portfolio(entry), f
+
+
+def iter_files():
+    """Yield (edition, portfolio, path, rel) for every Budget and MYEFO/PAES
+    workbook. `rel` is the path patches/--only match against: Budget files
+    keep their existing BUDGET_DIR-relative form (unchanged, so every
+    existing patches/*.py TARGET_FILE and past --only invocation still
+    matches); MYEFO files get an "MYEFO/"-prefixed, MYEFO_DIR-relative form
+    instead -- distinct from any Budget rel (whose first path segment is
+    always an edition folder, never literally "MYEFO"), so the two can
+    never collide.
+    """
+    for edition, portfolio, path in _iter_root(BUDGET_DIR):
+        yield edition, portfolio, path, os.path.relpath(path, BUDGET_DIR)
+    for edition, portfolio, path in _iter_root(MYEFO_DIR, use_fallback_for_stray_files=True):
+        yield edition, portfolio, path, "MYEFO/" + os.path.relpath(path, MYEFO_DIR)
 
 
 _PROGRAM_EXPENSES_TABLE = """
@@ -150,7 +229,7 @@ _PROGRAM_EXPENSES_TABLE = """
         program_number      TEXT NOT NULL,   -- e.g. '1.1'
         program_name        TEXT,
         fiscal_year         TEXT NOT NULL,   -- the FY the amount refers to
-        estimate_type       TEXT NOT NULL,   -- estimated_actual | budget | forward_estimate
+        estimate_type       TEXT NOT NULL,   -- estimated_actual | revised_estimate | budget | forward_estimate
         amount_thousands    INTEGER NOT NULL,
         source_file         TEXT NOT NULL,
         sheet_name          TEXT
@@ -242,9 +321,10 @@ def normalize_program_name_casing(con):
 
 def main(only=None):
     """only: an optional list of substrings matched (case-insensitively)
-    against each file's own path relative to BUDGET_DIR -- e.g.
-    "2022-23 October Budget/Social Services" to rescan one edition's
-    portfolio folder, or "NDIA.xlsx" to rescan just one workbook. When
+    against each file's own `rel` (see iter_files) -- e.g.
+    "2022-23 October Budget/Social Services" to rescan one Budget edition's
+    portfolio folder, "MYEFO/2024-25 MYEFO" to rescan a whole MYEFO
+    edition, or "NDIA.xlsx" to rescan just one workbook. When
     given, this is a SCOPED reingest, not a full rebuild: the table is
     never dropped (ensure_schema, not create_schema), and only the
     matching files' own existing rows are cleared (by source_file)
@@ -272,8 +352,7 @@ def main(only=None):
     conflicts = []  # (source_file, key, kept_amount, dropped_amount)
     file_count = 0
     skipped = 0
-    for edition, portfolio, path in iter_files():
-        rel = os.path.relpath(path, BUDGET_DIR)
+    for edition, portfolio, path, rel in iter_files():
         if only and not any(pat.lower() in rel.lower() for pat in only):
             skipped += 1
             continue
@@ -352,7 +431,7 @@ def main(only=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Build (or scoped-reingest into) programs.db from data/pbs/Budget.",
+        description="Build (or scoped-reingest into) programs.db from data/pbs/Budget and data/pbs/MYEFO.",
     )
     parser.add_argument(
         "--only",
@@ -360,13 +439,15 @@ if __name__ == "__main__":
         default=None,
         metavar="PATH_SUBSTRING",
         help=(
-            "Scope to files whose path (relative to data/pbs/Budget, e.g. "
-            "'2022-23 October Budget/Social Services/2022-23 OCT PBS Excel "
-            "Tables - NDIA.xlsx') contains this substring (case-insensitive). "
-            "Repeatable to match several files/folders at once. Only those "
-            "files' own rows are cleared and reinserted -- every other row in "
-            "programs.db is left untouched, and the table itself is never "
-            "dropped. Omit for a normal full rebuild."
+            "Scope to files whose `rel` (relative to data/pbs/Budget for a "
+            "Budget file, e.g. '2022-23 October Budget/Social Services/2022-23 "
+            "OCT PBS Excel Tables - NDIA.xlsx'; 'MYEFO/'-prefixed and relative "
+            "to data/pbs/MYEFO for a PAES file, e.g. 'MYEFO/2024-25 MYEFO/"
+            "Agriculture/DAFF PAES 2024-25.xlsx') contains this substring "
+            "(case-insensitive). Repeatable to match several files/folders at "
+            "once. Only those files' own rows are cleared and reinserted -- "
+            "every other row in programs.db is left untouched, and the table "
+            "itself is never dropped. Omit for a normal full rebuild."
         ),
     )
     args = parser.parse_args()

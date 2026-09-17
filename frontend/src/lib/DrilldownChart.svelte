@@ -40,7 +40,13 @@
   const margin = { top: 24, right: 16, bottom: 52, left: 68 };
 
   let hovered = $state(null);
-  let isProjected = (d) => d.estimate_type !== "estimated_actual";
+  // revised_estimate (a PAES/MYEFO mid-year update to a program's own
+  // current-year Budget forecast -- see backend/measures/views.py's
+  // _stitch_series) is treated the same as estimated_actual here: it's the
+  // best-available figure for its year, not a speculative forecast, so it
+  // gets the same solid/filled treatment rather than the dashed/hollow one
+  // reserved for a genuine still-unrevised budget/forward_estimate.
+  let isProjected = (d) => d.estimate_type !== "estimated_actual" && d.estimate_type !== "revised_estimate";
 
   function buildChart(rawLines) {
     const lines = rawLines.map((l) => ({

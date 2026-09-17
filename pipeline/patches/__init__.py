@@ -13,10 +13,12 @@ lying about something and to say exactly why.
 Each patch is a module in this package that declares:
 
     TARGET_FILE = "<edition>/<portfolio folder>/<workbook filename>"
-        Relative to data/pbs/Budget, exactly matching the `rel` path
-        build_db.py computes for each file. This is what makes the patch's
-        scope self-evident to a reader -- open the file, see the exact
-        document it touches.
+        Relative to data/pbs/Budget for a Budget PBS file, or
+        "MYEFO/<edition>/<portfolio folder>/<workbook filename>" (relative
+        to data/pbs/MYEFO instead, "MYEFO/"-prefixed) for a PAES file --
+        exactly matching the `rel` path build_db.py's iter_files() computes
+        for each file. This is what makes the patch's scope self-evident to
+        a reader -- open the file, see the exact document it touches.
 
     def apply(records: list[dict]) -> list[dict]:
         Takes parse_workbook()'s full, un-deduped record list for that one
@@ -55,7 +57,7 @@ def _load_patches():
 
 def apply_patches(rel_path, records):
     """Run any patch registered for `rel_path` (as computed by build_db.py's
-    `os.path.relpath(path, BUDGET_DIR)`) over that workbook's records."""
+    `iter_files()` -- see its own docstring) over that workbook's records."""
     mod = _load_patches().get(rel_path)
     if mod is None:
         return records

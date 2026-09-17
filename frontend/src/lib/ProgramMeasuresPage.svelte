@@ -92,6 +92,15 @@
   // turning it back off always returns to exactly what was there before.
   let combineSameName = $state(false);
 
+  // Accuracy ranking for a fiscal year's own estimate_type, most
+  // authoritative first -- matches the three-tier order backend/measures/
+  // views.py's _stitch_series already picks per year (estimated_actual,
+  // then a PAES/MYEFO revised_estimate, then a plain budget/
+  // forward_estimate forecast). Used below to pick which of two combined
+  // portfolios' own labels wins for one fiscal year once "Combine programs
+  // with the same name" sums their $ together.
+  const ESTIMATE_TYPE_RANK = { estimated_actual: 0, revised_estimate: 1, budget: 2, forward_estimate: 2 };
+
   const PROGRAM_LINE_COLORS = [
     "#0f766e",
     "#7c3aed",
@@ -234,7 +243,10 @@
           ? {
               ...prev,
               amount_thousands: prev.amount_thousands + d.amount_thousands,
-              estimate_type: prev.estimate_type === "estimated_actual" ? prev.estimate_type : d.estimate_type,
+              estimate_type:
+                ESTIMATE_TYPE_RANK[prev.estimate_type] <= ESTIMATE_TYPE_RANK[d.estimate_type]
+                  ? prev.estimate_type
+                  : d.estimate_type,
             }
           : { ...d });
       }
@@ -309,7 +321,13 @@
   const margin = { top: 24, right: 16, bottom: 52, left: 68 };
 
   let hovered = $state(null);
-  let isProjected = (d) => d.estimate_type !== "estimated_actual";
+  // revised_estimate (a PAES/MYEFO mid-year update to a program's own
+  // current-year Budget forecast -- see backend/measures/views.py's
+  // _stitch_series) is treated the same as estimated_actual here: it's the
+  // best-available figure for its year, not a speculative forecast, so it
+  // gets the same solid/filled treatment rather than the dashed/hollow one
+  // reserved for a genuine still-unrevised budget/forward_estimate.
+  let isProjected = (d) => d.estimate_type !== "estimated_actual" && d.estimate_type !== "revised_estimate";
 
   // One line per distinct program_name (see dataPromise's own note on
   // why profileByName is deduped that way, not by selection). Solid
@@ -538,7 +556,7 @@
             <div class="tooltip">
               <strong>{hovered.series_label}</strong> · {hovered.fiscal_year}:
               {formatDollars(hovered.amount_thousands)}
-              {#if isProjected(hovered)}(forward estimate){/if}
+              {#if hovered.estimate_type === "revised_estimate"}(revised estimate, PAES/MYEFO){:else if isProjected(hovered)}(forward estimate){/if}
             </div>
           {/if}
         </div>

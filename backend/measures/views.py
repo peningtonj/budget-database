@@ -54,7 +54,58 @@ LATEST_BUDGET_EDITION = "2026-27 Budget"
 # blank for that year is more honest than borrowing a since-superseded
 # figure). Shared by _stitch_series and program_estimate_history's own
 # actual_series below -- keep both in sync with this, not a local copy.
-EXCLUDED_ACTUAL_EDITIONS = {"2022-23 October Budget"}
+#
+# 2022-23 MYEFO is excluded for the same reason: it sits inside that exact
+# same turbulent portfolio-transition window (the 2022 election's mid-year
+# machinery-of-government changes), and its own "Actual expenses" column
+# restates 2021-22 a *third* time -- confirmed via direct inspection
+# (ACQSC "Quality Aged Care Services": $202.3m March Budget / $173.1m
+# October Budget / $121.2m MYEFO; ADHA "Digital Health": $305.8m / $323.3m
+# / $238.0m) that its figures are yet another, still-lower restatement,
+# not a settling-down toward one stable number. It would otherwise win the
+# _stitch_series dict-overwrite race for that one row despite being
+# chronologically last: `.order_by("edition")` sorts "2022-23 MYEFO"
+# *before* "2022-23 March Budget" (ASCII 'Y' < 'a'), the one case where
+# alphabetical order doesn't already match chronological order the way it
+# does for every other year's Budget-then-MYEFO pair (and March-then-
+# October within this same year). Only its estimated_actual contribution
+# is excluded -- its own revised_estimate for 2022-23 itself is unaffected
+# (EXCLUDED_ACTUAL_EDITIONS is never consulted for that tier).
+EXCLUDED_ACTUAL_EDITIONS = {"2022-23 October Budget", "2022-23 MYEFO"}
+
+
+def _is_myefo_edition(edition):
+    return edition.endswith("MYEFO")
+
+
+# Four tiers of accuracy for a given fiscal year's own program-expense
+# figure, most authoritative first -- both "actual" tiers (1 and 2) outrank
+# the same year's own in-year forecast (3): an actual claim, even a
+# Budget's own near-year-end guess, is more reliable than a mid-year
+# revision. Between the two actual tiers, a *later* MYEFO/PAES edition's
+# own restatement of a now-closed year ("Actual expenses") outranks the
+# earlier Budget edition's own claim for that same year ("Estimated
+# actual") -- the later restatement, made with more of that year's real
+# accounts settled, wins.
+#
+# (1) estimated_actual from a MYEFO/PAES edition ("Actual expenses" --
+#     that year's own following MYEFO restating it as closed).
+# (2) estimated_actual from a Budget edition ("Estimated actual" -- that
+#     year's own following Budget's claim, used only when tier 1 doesn't
+#     exist for that year yet).
+# (3) revised_estimate -- that same year's own PAES/MYEFO mid-year update
+#     to its Budget-time forecast (only some agencies publish one --
+#     build_db.py ingests it from data/pbs/MYEFO alongside the Budget-only
+#     estimated_actual/budget/forward_estimate rows it's always ingested).
+# (4) budget/forward_estimate -- the latest *Budget* edition's own
+#     forecast (never a MYEFO's -- see program_estimate_history's own
+#     vintages, which are Budget-only for the same reason: a MYEFO's own
+#     forward estimates aren't wanted here), for a year nothing more
+#     authoritative has reported on yet.
+#
+# _stitch_series and program_estimate_history's own actual_series both
+# apply exactly this tiering (tiers 1-3 only, for actual_series -- see its
+# own docstring) -- keep any change to the ordering in sync across both.
 
 
 _PORTFOLIO_VARIANTS = {}
@@ -209,26 +260,33 @@ def _stitch_series(rows, latest_edition=LATEST_BUDGET_EDITION):
     """rows: dicts with fiscal_year, estimate_type, edition, amount_thousands
     -- possibly several rows sharing the same (fiscal_year, estimate_type,
     edition), e.g. one per program when aggregating a whole agency or
-    outcome, which get summed first. Then, per fiscal year: prefer the
-    estimated_actual figure (the most authoritative retrospective figure,
-    reported by the Budget edition immediately following that year); for a
-    year with no estimated_actual yet, use latest_edition's own
-    budget/forward_estimate figure. Shared by program_profile,
+    outcome, which get summed first. Then, per fiscal year, the four-tier
+    accuracy order documented above the EXCLUDED_ACTUAL_EDITIONS/tiering
+    comment: a MYEFO/PAES edition's own estimated_actual ("Actual
+    expenses") first; else a Budget edition's own estimated_actual
+    ("Estimated actual"); else that same year's own revised_estimate (a
+    PAES/MYEFO mid-year update, only some agencies publish one); else
+    latest_edition's own budget/forward_estimate. Shared by program_profile,
     portfolio_profile, and agency_outcome_profile below.
 
     Callers MUST pass `rows` ordered by edition -- excluding
     EXCLUDED_ACTUAL_EDITIONS (module-level, above) from ever contributing
-    an estimated_actual figure settles the one real case of two editions
-    both claiming the same fiscal_year's estimated_actual, so there's
-    nothing left to overwrite there; order still matters for the final
-    budget/forward_estimate fallback pass (must land on latest_edition
-    specifically), so every call site below keeps `.order_by("edition")`
-    regardless.
+    an estimated_actual figure settles the one real case *within* the
+    MYEFO tier or the Budget tier where two editions both claim the same
+    fiscal_year's estimated_actual, so there's nothing left to overwrite
+    there; order still matters for the final budget/forward_estimate
+    fallback pass (must land on latest_edition specifically), so every
+    call site below keeps `.order_by("edition")` regardless.
 
-    2022-23 October Budget is the one case where two editions both claim
-    the same fiscal_year's estimated_actual (both it and 2022-23 March
-    Budget restate 2021-22) -- see EXCLUDED_ACTUAL_EDITIONS above for why
-    its own figure is never used at all, not even as a last resort.
+    2022-23 October Budget and 2022-23 March Budget both claim 2021-22's
+    estimated_actual (within the Budget tier); 2022-23 MYEFO and (via the
+    following year) 2023-24 MYEFO both eventually touch nearby years too --
+    see EXCLUDED_ACTUAL_EDITIONS above for why 2022-23 October Budget's and
+    2022-23 MYEFO's own figures are never used at all, not even as a last
+    resort. No equivalent exclusion exists for revised_estimate: only one
+    MYEFO/PAES edition ever reports a revised_estimate for a given fiscal
+    year (its own current year), so there's no analogous double-claim to
+    resolve.
     """
     summed = defaultdict(int)
     for r in rows:
@@ -237,14 +295,39 @@ def _stitch_series(rows, latest_edition=LATEST_BUDGET_EDITION):
         ]
 
     by_fiscal_year = {}
+    # Tier 1: a MYEFO/PAES edition's own "Actual expenses".
     for (fy, etype, ed), amt in summed.items():
-        if etype == "estimated_actual" and ed not in EXCLUDED_ACTUAL_EDITIONS:
+        if etype == "estimated_actual" and _is_myefo_edition(ed) and ed not in EXCLUDED_ACTUAL_EDITIONS:
             by_fiscal_year[fy] = {
                 "fiscal_year": fy,
                 "estimate_type": etype,
                 "edition": ed,
                 "amount_thousands": amt,
             }
+    # Tier 2: a Budget edition's own "Estimated actual".
+    for (fy, etype, ed), amt in summed.items():
+        if (
+            fy not in by_fiscal_year
+            and etype == "estimated_actual"
+            and not _is_myefo_edition(ed)
+            and ed not in EXCLUDED_ACTUAL_EDITIONS
+        ):
+            by_fiscal_year[fy] = {
+                "fiscal_year": fy,
+                "estimate_type": etype,
+                "edition": ed,
+                "amount_thousands": amt,
+            }
+    # Tier 3: that same year's own revised_estimate.
+    for (fy, etype, ed), amt in summed.items():
+        if fy not in by_fiscal_year and etype == "revised_estimate":
+            by_fiscal_year[fy] = {
+                "fiscal_year": fy,
+                "estimate_type": etype,
+                "edition": ed,
+                "amount_thousands": amt,
+            }
+    # Tier 4: latest_edition's own budget/forward_estimate.
     for (fy, etype, ed), amt in summed.items():
         if fy not in by_fiscal_year and ed == latest_edition:
             by_fiscal_year[fy] = {
@@ -407,12 +490,16 @@ def _build_measure_detail(measure_name, edition):
 @api_view(["GET"])
 def program_profile(request):
     """?program_name=<name>&portfolio=<portfolio> -> one program's
-    long-run financial profile, stitched from every ingested Budget
-    edition (2017-18 through the latest): the estimated_actual figure
-    for every year that has one (the most authoritative retrospective
-    figure available -- reported by the Budget edition immediately
-    following that year), and for years with no estimated_actual yet,
-    the latest Budget edition's own budget/forward_estimate figure.
+    long-run financial profile, stitched from every ingested Budget and
+    MYEFO/PAES edition (2017-18 through the latest): a MYEFO/PAES
+    edition's own "Actual expenses" for every year that has one (the most
+    authoritative retrospective figure available); for a year with none
+    yet, a Budget edition's own "Estimated actual" instead; for a year
+    with neither, that same year's own revised_estimate (that same year's
+    own PAES mid-year update to its Budget-time forecast); and for years
+    with none of the three, the latest Budget edition's own
+    budget/forward_estimate figure. See _stitch_series's own docstring for
+    the full four-tier ordering.
 
     portfolio is required, not optional -- same reasoning as
     measures_by_program()'s own docstring: a program_name can legitimately
@@ -482,13 +569,23 @@ def program_profile(request):
 def program_estimate_history(request):
     """?program_name=<name>&portfolio=<portfolio> -> the raw material
     for a "how has the Budget's own forecast for this program moved
-    with each round" chart: one "vintage" series per ingested edition
-    (exactly what that Budget round itself reported for this program --
-    its current year's budget figure plus its own forward estimates for
-    the following years), alongside actual_series -- the realised
-    estimated_actual figure for every year one exists, the same
-    authoritative figures program_profile()'s own stitched series
-    prefers.
+    with each round" chart: one "vintage" series per ingested *Budget*
+    edition only (exactly what that round itself reported for this
+    program -- its current year's own figure plus its own forward
+    estimates for the following years), alongside actual_series -- the
+    realised estimated_actual figure for every year one exists (a
+    MYEFO/PAES edition's own "Actual expenses" first, else a Budget
+    edition's own "Estimated actual"), else that year's own
+    revised_estimate (a PAES/MYEFO mid-year update) if one exists -- the
+    same tiers program_profile()'s own stitched series prefers (see
+    _stitch_series's own docstring).
+
+    MYEFO/PAES editions are deliberately excluded from `vintages` (though
+    they still feed actual_series, same as everywhere else) -- a genuine
+    product decision, not an oversight: this chart is about *rounds of the
+    Budget forecast itself*, and a MYEFO vintage line for every edition
+    made it too busy to read without adding anything a viewer couldn't
+    already get from actual_series's own more-accurate line.
 
     Unlike program_profile(), nothing here is stitched/deduplicated
     across editions -- every edition's own rows survive as their own
@@ -534,9 +631,15 @@ def program_estimate_history(request):
         key = (r["edition"], r["budget_year"], r["fiscal_year"], r["estimate_type"])
         summed[key] += r["amount_thousands"]
 
+    # vintages is Budget-only (see this function's own docstring) --
+    # a MYEFO/PAES edition's own rows are excluded from by_edition here so
+    # it never becomes its own vintage line, but summed (built above from
+    # every edition, MYEFO included) still feeds actual_by_fy below.
     by_edition = defaultdict(list)
     budget_year_by_edition = {}
     for (edition, budget_year, fy, etype), amt in summed.items():
+        if _is_myefo_edition(edition):
+            continue
         budget_year_by_edition[edition] = budget_year
         by_edition[edition].append(
             {"fiscal_year": fy, "estimate_type": etype, "amount_thousands": amt}
@@ -550,26 +653,48 @@ def program_estimate_history(request):
         }
         for edition, points in by_edition.items()
     ]
-    # (budget_year, edition) rather than budget_year alone -- two editions
-    # can share one budget_year (a mid-year update, e.g. "2022-23 March
-    # Budget" vs "2022-23 October Budget"), and need a stable, correctly
-    # chronological order between them; sorting the edition string second
-    # happens to already put "March" before "October" for every such pair
-    # ingested so far.
+    # (budget_year, edition) rather than budget_year alone -- two Budget
+    # editions can share one budget_year (2022-23's own March Budget vs
+    # October Budget), and need a stable, correctly chronological order
+    # between them; sorting the edition string second happens to already
+    # put "March" before "October" for every such pair ingested so far.
+    # (MYEFO is never in this list at all -- see above -- so its own
+    # alphabetical quirk relative to "March Budget" never arises here.)
     vintages.sort(key=lambda v: (v["budget_year"], v["edition"]))
 
-    # Excludes EXCLUDED_ACTUAL_EDITIONS the same way _stitch_series does
-    # (see its own docstring) -- this function doesn't call _stitch_series
-    # itself (it needs the full per-edition vintages list too, not just
-    # the stitched actual line), so the same exclusion has to be applied
-    # here independently. Keep both in sync.
+    # Same three tiers _stitch_series applies (see its own docstring and
+    # the tiering comment above EXCLUDED_ACTUAL_EDITIONS), capped at tier 3
+    # -- no tier-4 budget/forward_estimate fallback here, unlike
+    # program_profile()'s own stitched series: that's what `vintages`
+    # itself already shows, one line per Budget edition. This function
+    # doesn't call _stitch_series itself (it needs the full per-edition
+    # vintages list too, not just the stitched actual line), so the same
+    # tiering/exclusion has to be applied here independently. Keep both in
+    # sync.
     actual_by_fy = {}
+    # Tier 1: a MYEFO/PAES edition's own "Actual expenses".
     for (edition, budget_year, fy, etype), amt in summed.items():
-        if etype == "estimated_actual" and edition not in EXCLUDED_ACTUAL_EDITIONS:
-            actual_by_fy[fy] = amt
+        if etype == "estimated_actual" and _is_myefo_edition(edition) and edition not in EXCLUDED_ACTUAL_EDITIONS:
+            actual_by_fy[fy] = (etype, amt)
+    # Tier 2: a Budget edition's own "Estimated actual".
+    for (edition, budget_year, fy, etype), amt in summed.items():
+        if (
+            fy not in actual_by_fy
+            and etype == "estimated_actual"
+            and not _is_myefo_edition(edition)
+            and edition not in EXCLUDED_ACTUAL_EDITIONS
+        ):
+            actual_by_fy[fy] = (etype, amt)
+    # Tier 3: that same year's own revised_estimate.
+    for (edition, budget_year, fy, etype), amt in summed.items():
+        if fy not in actual_by_fy and etype == "revised_estimate":
+            actual_by_fy[fy] = (etype, amt)
+    # estimate_type travels with each point (not just a flat "actual_series"
+    # of amounts) so the frontend can label a revised_estimate point as
+    # what it actually is -- a mid-year forecast, not yet a settled actual.
     actual_series = [
-        {"fiscal_year": fy, "amount_thousands": amt}
-        for fy, amt in sorted(actual_by_fy.items())
+        {"fiscal_year": fy, "amount_thousands": amt, "estimate_type": etype}
+        for fy, (etype, amt) in sorted(actual_by_fy.items())
     ]
 
     meta = next(
@@ -919,10 +1044,13 @@ def program_outcome_audit(request):
 
     results = []
     for (outcome_number, program_name), g in groups.items():
-        # _stitch_series also fills years with no estimated_actual from
-        # latest_edition's own budget/forward_estimate -- drop those here,
-        # keeping only genuine estimated_actual figures (its own
-        # "estimate_type" tags which is which).
+        # _stitch_series also fills years with no estimated_actual from a
+        # PAES/MYEFO revised_estimate, or failing that latest_edition's own
+        # budget/forward_estimate -- drop both here, keeping only genuine
+        # estimated_actual figures (its own "estimate_type" tags which is
+        # which): a revised_estimate is a more accurate mid-year forecast,
+        # not a settled actual, and this page's whole purpose is spotting
+        # real gaps in actual coverage, not the best-available figure.
         stitched = _stitch_series(g["rows"])
         years = {
             s["fiscal_year"]: s["amount_thousands"]

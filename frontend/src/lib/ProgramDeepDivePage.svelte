@@ -92,7 +92,17 @@
       };
     });
 
-    const actualPoints = actualSeries.map((d) => ({ ...d, series_label: "Actual" }));
+    // Most of actualSeries is a genuine settled estimated_actual, labelled
+    // "Actual" -- but see program_estimate_history()'s own docstring: a
+    // year with none yet can be filled from that same year's own PAES/
+    // MYEFO revised_estimate instead, which is still a forecast (just a
+    // more accurate one than the original Budget-time figure), so its
+    // point is labelled accordingly rather than implying it's already
+    // closed out.
+    const actualPoints = actualSeries.map((d) => ({
+      ...d,
+      series_label: d.estimate_type === "revised_estimate" ? "Revised estimate (PAES/MYEFO)" : "Actual",
+    }));
 
     return {
       fiscalYears,
@@ -135,9 +145,10 @@
     <section>
       <h2>How the Budget's own estimate has moved with each round</h2>
       <p class="section-note">
-        One line per ingested Budget edition, showing exactly what that round's own Budget
-        papers projected for this program -- its then-current year plus its own forward
-        estimates. The bold line is the realised actual once each year is known.
+        One line per ingested Budget or mid-year update (MYEFO/PAES) edition, showing exactly
+        what that round's own papers projected for this program -- its then-current year plus
+        its own forward estimates. The bold line is the realised actual once each year is
+        known, or that year's own mid-year revised estimate in the meantime.
       </p>
       {#if data.vintages.length === 0}
         <p class="status">No estimate history found for this program.</p>

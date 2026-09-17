@@ -295,8 +295,22 @@ def col_types(header_row):
             # bogus year if the description prose happens to mention one.
             continue
         fy = fiscal_year(cell)
-        if "estimated actual" in t or "revised budget" in t or re.search(r"\bactual\b", t):
+        if "estimated actual" in t or re.search(r"\bactual\b", t):
             etype = "estimated_actual"
+        elif "revised" in t and ("estimate" in t or "budget" in t):
+            # PAES/MYEFO's own mid-year update to the current financial
+            # year's Budget-time forecast -- "Revised estimate(d)(s)
+            # expense(s)" in most agencies' own Table 2.x, "Revised Budget"
+            # in ARPANSA's (the one agency that words this column
+            # differently; confirmed via its own Table 2.1.1: this sits in
+            # the same current-year column position as every other
+            # agency's "Revised estimate" column, not a genuine Budget-time
+            # figure for a different year). More accurate than that same
+            # year's original "budget" column (see EXCLUDED_ACTUAL_EDITIONS-
+            # adjacent tiering in backend/measures/views.py's _stitch_series),
+            # but not yet a settled "estimated_actual" -- that only exists
+            # once the following year's Budget restates this year as closed.
+            etype = "revised_estimate"
         elif "budget" in t:
             etype = "budget"
         elif "forward" in t or "estimate" in t:
@@ -319,18 +333,34 @@ def normalize_fiscal_years(cmap):
     forward estimates -- immediately adjacent with no gaps. So the correct
     year for every column can be derived purely from its position relative
     to the budget column, regardless of what its own header cell says.
+
+    A `revised_estimate` column is excluded from that positional sequence
+    (position is tracked by rank among the remaining columns, not raw
+    column index, so excluding it doesn't shift anything after it) and
+    keeps whatever year its own header text already states. It's the one
+    column that deliberately repeats an adjacent column's own year rather
+    than advancing to a new one -- a PAES/MYEFO mid-year update sitting
+    right next to that same year's original Budget-time figure (seen on a
+    handful of agencies' own "Total Budgeted Resources Available for
+    Outcome N" reconciliation tables, alongside the normal per-program
+    one). Applying the usual position-from-budget-column offset to it
+    would misdate it to the *next* column's year instead.
     """
-    budget_cols = [(j, fy) for j, (fy, etype) in cmap.items() if etype == "budget"]
-    if not budget_cols:
+    sequenced = sorted((j, fy, etype) for j, (fy, etype) in cmap.items()
+                        if etype != "revised_estimate")
+    budget_ranks = [rank for rank, (j, fy, etype) in enumerate(sequenced) if etype == "budget"]
+    if not budget_ranks:
         return cmap
-    j_budget, fy_budget = budget_cols[0]
-    start_year = int(fy_budget.split("-")[0])
+    budget_rank = budget_ranks[0]
+    start_year = int(sequenced[budget_rank][1].split("-")[0])
 
     def fy_str(y):
         return f"{y}-{(y + 1) % 100:02d}"
 
-    return {j: (fy_str(start_year + (j - j_budget)), etype)
-            for j, (_, etype) in cmap.items()}
+    out = dict(cmap)
+    for rank, (j, fy, etype) in enumerate(sequenced):
+        out[j] = (fy_str(start_year + (rank - budget_rank)), etype)
+    return out
 
 
 def find_column_map(rows, max_window=5):
