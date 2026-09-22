@@ -6,6 +6,8 @@
   import { programHierarchyState, loadProgramHierarchyOnce } from "./programHierarchy.svelte.js";
   import { formatDollars, formatMillionsCell } from "./format.js";
   import { adjustAmount, isInflationAdjustEnabled, CURRENT_FY } from "./inflation.svelte.js";
+  import DownloadTableButton from "./DownloadTableButton.svelte";
+  import { seriesToCsvRows } from "./downloadTable.js";
 
   // programSelections: a snapshot of the program tray's own
   // {program_name, portfolio} pairs at the moment "Summarise" was
@@ -550,6 +552,15 @@
                 {/if}
               </span>
             {/each}
+            <span class="legend-spacer"></span>
+            <DownloadTableButton
+              filename="program-actuals-comparison"
+              rows={seriesToCsvRows(
+                c.fiscalYears,
+                c.lines.map((line) => ({ label: line.label, points: line.points })),
+                { adjustedNote: isInflationAdjustEnabled() ? `Adjusted to ${CURRENT_FY} dollars` : null },
+              )}
+            />
           </div>
           <p class="section-note deep-dive-hint">Click a program above to see how its Budget estimate has moved with each round.</p>
           {#if hovered}
@@ -805,10 +816,14 @@
   .legend {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 1rem;
     margin-top: 0.5rem;
     font-size: 0.82rem;
     color: var(--text-muted);
+  }
+  .legend-spacer {
+    flex: 1;
   }
   .legend-item {
     display: inline-flex;

@@ -141,6 +141,51 @@ def _glob_workbooks(directory):
     return sorted(f for f in set(files) if not os.path.basename(f).startswith(("~$", ".")))
 
 
+# 2017-18 MYEFO's own flat layout (see _myefo_portfolio_fallback_index)
+# resolves most agencies' portfolio by matching clean_agency(this MYEFO
+# file) against clean_agency(that same fiscal year's own Budget file) --
+# but 18 of its 48 files use a filename convention different enough from
+# their own Budget-side sibling that the two clean_agency() outputs never
+# match (e.g. "Education PAES 2017-18.xlsx" -> "Education", vs the
+# Budget-side "Education and Training.xlsx" -> "Education and Training"),
+# silently leaving those 18 agencies' whole rows with a blank portfolio.
+# Confirmed one by one against the 2017-18 Budget directory's own listing
+# (data/pbs/Budget/2017-18 Budget) -- the same "same fiscal year" source
+# the general fallback already prefers -- except AFP and Home Affairs
+# (the Department of Home Affairs itself), both created by the December
+# 2017 machinery-of-government change that happened *between* the 2017-18
+# Budget (May 2017) and this same MYEFO (February 2018): there's no
+# 2017-18 Budget-side "Home Affairs" directory at all to match against,
+# and by MYEFO's own publication date AFP had already moved out of
+# Attorney-General's into the newly-created Home Affairs, so both are
+# given that real, current-as-of-publication portfolio directly instead.
+_MYEFO_2017_18_PORTFOLIO_OVERRIDES = {
+    "AFP": "Home Affairs",
+    "AGD": "Attorney General's",
+    "BoM": "Environment and Energy",
+    "Comms": "Communications and the Arts",
+    "DFAT": "Foreign Affairs and Trade",
+    "DHA": "Defence",
+    "DIIS": "Industry, Innovation and Science",
+    # Keeps the source folder's own typo ("adn") rather than correcting
+    # it -- portfolio_aliases.py's own canon_portfolio() already has this
+    # exact misspelling aliased to "Infrastructure", so matching it
+    # verbatim is what lets this row canonicalize the same way every
+    # other 2017-18 Budget row from that same (real, typo'd) folder does.
+    "DIRDC": "Infrastructure adn Regional Development",
+    "DSS": "Social Services",
+    "DoAWR PASE": "Agriculture and Water Resources",  # filename typo "PASE" for "PAES"
+    "Education": "Education and Training",
+    "FWOROCE": "Employment",
+    "FedCA": "Attorney General's",
+    "HCA": "Attorney General's",
+    "Home Affairs": "Home Affairs",
+    "Jobs": "Employment",
+    "OAIC": "Attorney General's",
+    "OPC": "Attorney General's",
+}
+
+
 def _myefo_portfolio_fallback_index(myefo_edition_dir):
     """2017-18 MYEFO alone has no portfolio subdirectory layer at all --
     its agency files sit flat in the edition root, unlike every other
@@ -150,19 +195,27 @@ def _myefo_portfolio_fallback_index(myefo_edition_dir):
     year's own Budget edition's directory structure for a portfolio label,
     since an agency practically always sits in the same portfolio a few
     months later at MYEFO time as it did at Budget time within the one
-    year. Returns {agency_short_name: portfolio}, or {} if there's no
-    matching Budget directory to fall back to (portfolio is a display/
-    lookup field here, not part of program_expenses's own identity)."""
+    year -- topped up with _MYEFO_2017_18_PORTFOLIO_OVERRIDES for the
+    handful of agencies that fallback can't reach on its own (see its own
+    comment). Returns {agency_short_name: portfolio}, or just the
+    overrides (still {} for every other edition) if there's no matching
+    Budget directory to fall back to. portfolio here becomes
+    program_expenses.portfolio directly -- part of a program's own
+    (program_name, portfolio) identity everywhere else in this codebase,
+    not merely a display label, so getting it right matters as much here
+    as for a normally-laid-out edition.
+    """
     budget_edition_dir = myefo_edition_dir.replace("/MYEFO/", "/Budget/").replace(" MYEFO", " Budget")
-    if not os.path.isdir(budget_edition_dir):
-        return {}
     index = {}
-    for portfolio in sorted(os.listdir(budget_edition_dir)):
-        pdir = os.path.join(budget_edition_dir, portfolio)
-        if not os.path.isdir(pdir):
-            continue
-        for f in _glob_workbooks(pdir):
-            index[clean_agency(f)] = clean_portfolio(portfolio)
+    if os.path.isdir(budget_edition_dir):
+        for portfolio in sorted(os.listdir(budget_edition_dir)):
+            pdir = os.path.join(budget_edition_dir, portfolio)
+            if not os.path.isdir(pdir):
+                continue
+            for f in _glob_workbooks(pdir):
+                index[clean_agency(f)] = clean_portfolio(portfolio)
+    if os.path.basename(myefo_edition_dir) == "2017-18 MYEFO":
+        index.update(_MYEFO_2017_18_PORTFOLIO_OVERRIDES)
     return index
 
 
@@ -319,6 +372,108 @@ def normalize_program_name_casing(con):
     return renamed
 
 
+def normalize_portfolio_via_myefo(con):
+    """Within one budget_year, a program's own portfolio should be
+    consistent between its Budget filing and that same year's MYEFO/PAES
+    filing -- but a machinery-of-government portfolio rename can land
+    squarely between the two (the Budget in May, the MYEFO seven months
+    later in December), giving the exact same program two different
+    (program_name, portfolio) identities for one budget_year. Confirmed
+    concretely: "Non-Government Schools National Support" was filed under
+    "Education and Training" by the 2019-20 Budget but "Education, Skills
+    and Employment" by the 2019-20 MYEFO -- the Department of Education
+    and Training became the Department of Education, Skills and
+    Employment in between. Left alone, that program's own FY2018-19
+    "estimated actual" -- restated by BOTH editions, at very slightly
+    different amounts -- ends up split across two program-identity lines
+    instead of one, and "Combine programs with the same name"
+    (ProgramMeasuresPage.svelte, which sums $ across combined portfolios
+    per year) would double-count it.
+
+    PAES/MYEFO is treated as authoritative: whenever a program_name's
+    canonical portfolio (canon_portfolio -- comparing canonical, not raw,
+    spellings so this doesn't fire on two raw strings that are already
+    the same real portfolio, e.g. "DESE" vs "Education, Skills and
+    Employment") differs between its budget_year's own Budget edition(s)
+    and that same budget_year's own MYEFO edition, every one of that
+    Budget edition's own rows for it is rewritten to MYEFO's own
+    *canonical* portfolio (not its raw string, which can itself be a
+    messy MYEFO-folder-derived spelling like "2020-21 PAES DESE") -- the
+    MYEFO filing is the later, more current statement of which department
+    the program actually sits in, seven months further into the same
+    annual cycle.
+
+    Deliberately conservative about *which* mismatches count as the same
+    program continuing under a new name, rather than two unrelated
+    programs that merely share a generic name (confirmed real cases:
+    "Program Support", "Other Administered" -- both independently reused,
+    within a single edition, by several completely different agencies'
+    own outcome structures): only acts when (a) the MYEFO edition reports
+    exactly one portfolio for that program_name (not itself internally
+    ambiguous), (b) the Budget edition being rewritten also reports
+    exactly one portfolio for it, and (c) the two editions' own
+    program_number sets for that name actually overlap -- the numbering
+    staying stable is what distinguishes "the same program, renamed
+    portfolio" from a coincidental name collision between two different
+    agencies' own unrelated programs. "Program Support"/"Other
+    Administered" already fail check (a) or (b) on their own (each is
+    ambiguous even within one single edition), but (c) guards the same
+    risk for a generic name that only happens to resolve to one portfolio
+    per edition.
+
+    Run once, after every file's own rows are already inserted and after
+    normalize_program_name_casing() (so program_name comparisons use its
+    already-normalized casing) -- same pattern as that function.
+    """
+    rows = con.execute(
+        "select edition, budget_year, portfolio, program_name, program_number "
+        "from program_expenses where program_name is not null"
+    ).fetchall()
+
+    # (budget_year, program_name) -> {edition: {(portfolio, program_number), ...}}
+    by_program = defaultdict(lambda: defaultdict(set))
+    for edition, by, portfolio, name, pnum in rows:
+        by_program[(by, name)][edition].add((portfolio, pnum))
+
+    updated = 0
+    changes = []  # (edition, program_name, old_portfolio, new_portfolio)
+    for (by, name), by_edition in by_program.items():
+        myefo_editions = [ed for ed in by_edition if ed.endswith("MYEFO")]
+        # Only ever one MYEFO edition per budget_year in this dataset --
+        # if that ever stops holding, skip rather than guess which wins.
+        if len(myefo_editions) != 1:
+            continue
+        myefo_edition = myefo_editions[0]
+        myefo_entries = by_edition[myefo_edition]
+        myefo_portfolios = {p for p, _ in myefo_entries}
+        if len(myefo_portfolios) != 1:
+            continue
+        myefo_portfolio_canon = canon_portfolio(next(iter(myefo_portfolios)))
+        myefo_numbers = {n for _, n in myefo_entries}
+
+        for edition, entries in by_edition.items():
+            if edition == myefo_edition:
+                continue
+            portfolios = {p for p, _ in entries}
+            if len(portfolios) != 1:
+                continue
+            portfolio = next(iter(portfolios))
+            if canon_portfolio(portfolio) == myefo_portfolio_canon:
+                continue
+            numbers = {n for _, n in entries}
+            if not (numbers & myefo_numbers):
+                continue
+            cur = con.execute(
+                "update program_expenses set portfolio = ? "
+                "where edition = ? and program_name = ? and portfolio = ?",
+                (myefo_portfolio_canon, edition, name, portfolio),
+            )
+            updated += cur.rowcount
+            changes.append((edition, name, portfolio, myefo_portfolio_canon))
+    con.commit()
+    return updated, changes
+
+
 def main(only=None):
     """only: an optional list of substrings matched (case-insensitively)
     against each file's own `rel` (see iter_files) -- e.g.
@@ -334,13 +489,13 @@ def main(only=None):
     re-scans 1,600+ workbooks to change a handful of rows, taking
     9-15 minutes when the actual affected file set is tiny.
 
-    normalize_program_name_casing() still runs at the end over the
-    WHOLE table regardless of scope -- it's a fast in-DB pass (no
-    re-parsing), and a scoped run can still change which cross-edition
-    casing group a program falls into (exactly what motivated adding
-    this flag in the first place -- see build_db.py's own commit
-    history), so it has to see the complete, current table to stay
-    correct.
+    normalize_program_name_casing() and normalize_portfolio_via_myefo()
+    both still run at the end over the WHOLE table regardless of scope --
+    both are fast in-DB passes (no re-parsing), and a scoped run can
+    still change which cross-edition casing/portfolio group a program
+    falls into (exactly what motivated adding this flag in the first
+    place -- see build_db.py's own commit history), so both have to see
+    the complete, current table to stay correct.
     """
     con = sqlite3.connect(DB_PATH)
     if only:
@@ -404,6 +559,7 @@ def main(only=None):
     con.commit()
 
     renamed = normalize_program_name_casing(con)
+    portfolios_normalized, portfolio_changes = normalize_portfolio_via_myefo(con)
 
     if only:
         print(f"Scoped to (--only) : {only}")
@@ -414,6 +570,11 @@ def main(only=None):
     print(f"Files w/ errors    : {len(errors)}")
     print(f"Conflicting dups   : {len(conflicts)}")
     print(f"Program names recased : {renamed}")
+    print(f"Portfolios normalized to PAES/MYEFO : {portfolios_normalized}")
+    if portfolio_changes:
+        print("\n--- PORTFOLIO NORMALIZED TO MYEFO/PAES (edition, program, old -> new) ---")
+        for edition, name, old, new in portfolio_changes:
+            print("  ", edition, "|", name, "|", old, "->", new)
     if conflicts:
         print("\n--- CONFLICTING DUPLICATES (kept first, dropped rest) ---")
         for rel, key, kept, dropped in conflicts:

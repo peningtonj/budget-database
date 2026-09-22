@@ -3,6 +3,8 @@
   import { fetchProgramProfile } from "./api.js";
   import { formatDollars, formatMillionsCell } from "./format.js";
   import { adjustAmount, isInflationAdjustEnabled, CURRENT_FY } from "./inflation.svelte.js";
+  import DownloadTableButton from "./DownloadTableButton.svelte";
+  import { seriesToCsvRows, slugForFilename } from "./downloadTable.js";
 
   // defaultAgency: which agency's programs to show first (e.g. the
   // agency that received the largest combined $ across a selected set
@@ -330,6 +332,18 @@
             Measure ({line.direction})
           </span>
         {/each}
+        <span class="legend-spacer"></span>
+        <DownloadTableButton
+          filename={`${slugForFilename(selectedAgency)}-programs`}
+          rows={seriesToCsvRows(
+            c.fiscalYears,
+            [
+              ...c.programLines.map((line) => ({ label: line.program_name, points: line.points })),
+              ...c.measureLines.map((line) => ({ label: `Measure (${line.direction})`, points: line.points })),
+            ],
+            { adjustedNote: isInflationAdjustEnabled() ? `Adjusted to ${CURRENT_FY} dollars` : null },
+          )}
+        />
       </div>
 
       {#if hovered}
@@ -425,10 +439,14 @@
   .legend {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 1rem;
     margin-top: 0.5rem;
     font-size: 0.82rem;
     color: var(--text-muted);
+  }
+  .legend-spacer {
+    flex: 1;
   }
   .legend-item {
     display: inline-flex;

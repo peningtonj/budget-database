@@ -3,6 +3,8 @@
   import { fetchProgramEstimateHistory, fetchRelatedPrograms } from "./api.js";
   import { formatDollars } from "./format.js";
   import { adjustAmount, isInflationAdjustEnabled, CURRENT_FY } from "./inflation.svelte.js";
+  import DownloadTableButton from "./DownloadTableButton.svelte";
+  import { seriesToCsvRows, slugForFilename } from "./downloadTable.js";
 
   // programName + portfolio: a single program's stable identity within
   // one portfolio era (see program_estimate_history()'s own docstring
@@ -228,6 +230,18 @@
                 {line.edition}
               </span>
             {/each}
+            <span class="legend-spacer"></span>
+            <DownloadTableButton
+              filename={`${slugForFilename(data.program_name)}-estimate-history`}
+              rows={seriesToCsvRows(
+                c.fiscalYears,
+                [
+                  ...c.vintageLines.map((line) => ({ label: line.edition, points: line.points })),
+                  { label: "Actual", points: c.actual.points },
+                ],
+                { adjustedNote: isInflationAdjustEnabled() ? `Adjusted to ${CURRENT_FY} dollars` : null },
+              )}
+            />
           </div>
 
           {#if hovered}
@@ -337,10 +351,14 @@
   .legend {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 0.75rem 1rem;
     margin-top: 0.75rem;
     font-size: 0.82rem;
     color: var(--text-muted);
+  }
+  .legend-spacer {
+    flex: 1;
   }
   .legend-item {
     display: inline-flex;

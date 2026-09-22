@@ -136,7 +136,7 @@ def main():
 
     found = 0
     missed = []
-    for edition, portfolio, path in iter_files():
+    for edition, portfolio, path, _rel in iter_files():
         formal_name = extract_formal_name(path)
         if not formal_name:
             missed.append(os.path.relpath(path, ROOT))

@@ -3,6 +3,8 @@
   import { fetchPortfolioProfile, fetchAgencyOutcomeProfile } from "./api.js";
   import { formatDollars } from "./format.js";
   import { adjustAmount, isInflationAdjustEnabled, CURRENT_FY } from "./inflation.svelte.js";
+  import DownloadTableButton from "./DownloadTableButton.svelte";
+  import { seriesToCsvRows, slugForFilename } from "./downloadTable.js";
 
   // mode 'portfolio': one line per agency in `portfolio` for `edition`'s year.
   // mode 'agency': one line per outcome in `agency` (within `portfolio`) for
@@ -164,6 +166,15 @@
             {line.label}
           </span>
         {/each}
+        <span class="legend-spacer"></span>
+        <DownloadTableButton
+          filename={`${mode === "portfolio" ? slugForFilename(portfolio) : slugForFilename(agency)}-${mode}-profile-${edition}`}
+          rows={seriesToCsvRows(
+            c.fiscalYears,
+            c.chartLines.map((line) => ({ label: line.label, points: line.points })),
+            { adjustedNote: isInflationAdjustEnabled() ? `Adjusted to ${CURRENT_FY} dollars` : null },
+          )}
+        />
       </div>
 
       {#if hovered}
@@ -205,10 +216,14 @@
   .legend {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 1rem;
     margin-top: 0.5rem;
     font-size: 0.82rem;
     color: var(--text-muted);
+  }
+  .legend-spacer {
+    flex: 1;
   }
   .legend-item {
     display: inline-flex;
