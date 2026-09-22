@@ -95,12 +95,16 @@
   let combineSameName = $state(false);
 
   // Accuracy ranking for a fiscal year's own estimate_type, most
-  // authoritative first -- matches the three-tier order backend/measures/
-  // views.py's _stitch_series already picks per year (estimated_actual,
-  // then a PAES/MYEFO revised_estimate, then a plain budget/
-  // forward_estimate forecast). Used below to pick which of two combined
-  // portfolios' own labels wins for one fiscal year once "Combine programs
-  // with the same name" sums their $ together.
+  // authoritative first -- matches the tiering backend/measures/views.py's
+  // _stitch_series already picks per year (estimated_actual, then a
+  // PAES/MYEFO revised_estimate, then a plain budget/forward_estimate
+  // forecast). Used below to decide, for one fiscal year two combined
+  // portfolios both report, whether their $ should be summed (same tier
+  // -- genuinely complementary figures, e.g. two agencies' own halves of
+  // one program) or one should simply win outright (different tiers --
+  // not complementary at all, but two successive portfolio eras' own
+  // claims about the *same* year, one superseding the other; see
+  // groupedProfiles' own docstring).
   const ESTIMATE_TYPE_RANK = { estimated_actual: 0, revised_estimate: 1, budget: 2, forward_estimate: 2 };
 
   const PROGRAM_LINE_COLORS = [
@@ -203,16 +207,27 @@
   // True identity everywhere by default: one entry per (program_name,
   // portfolio) selection, `portfolios` a singleton array. With the
   // "Combine programs with the same name" toggle on, folds every
-  // profile sharing a program_name into one, summing $ by fiscal year --
-  // safe because a program only ever reports real figures under one
-  // portfolio/outcome in a given year (see program_estimate_history()'s
-  // own docstring on the Fishing Industry / outcome-renumbering case
-  // this exists for), so a combined year is really "whichever one
-  // reported it" rather than genuine double-counting. Deliberately a
-  // display-only regrouping -- it never touches program_profile()'s own
-  // (program_name, portfolio) identity or the tray's selections, so
-  // switching the toggle back off always returns to exactly what was
-  // there before.
+  // profile sharing a program_name into one. For most years only one of
+  // the combined portfolios has a real (non-zero) figure at all, so
+  // summing and "whichever one reported it" agree -- the case
+  // program_estimate_history()'s own docstring documents (Fishing
+  // Industry / outcome-renumbering). But a portfolio rename landing
+  // mid-cycle (a Budget vs that same year's own MYEFO disagreeing --
+  // see build_db.py's own normalize_portfolio_via_myefo) leaves the
+  // *boundary* fiscal year with a genuine, different-tier figure on
+  // BOTH sides: the old portfolio's own last mid-year revised_estimate
+  // before the rename, and the new portfolio's own later, more
+  // authoritative estimated_actual restating that same year once it
+  // closed. Summing those double-counts one real dollar figure as two.
+  // So amounts are only ever summed when both sides' own estimate_type
+  // ranks tie (genuinely complementary, e.g. two agencies' own halves of
+  // one program) -- when they differ, the higher-ranked (more
+  // authoritative) side simply wins outright, same as _stitch_series
+  // itself would if this were one continuous (program_name, portfolio)
+  // series server-side. Deliberately a display-only regrouping -- it
+  // never touches program_profile()'s own (program_name, portfolio)
+  // identity or the tray's selections, so switching the toggle back off
+  // always returns to exactly what was there before.
   function groupedProfiles(profileByKey, combine) {
     const profiles = [...profileByKey.values()];
     if (!combine) return profiles.map((p) => ({ ...p, portfolios: [p.portfolio] }));
@@ -241,16 +256,22 @@
       const byFy = new Map(existing.series.map((d) => [d.fiscal_year, d]));
       for (const d of p.series) {
         const prev = byFy.get(d.fiscal_year);
-        byFy.set(d.fiscal_year, prev
-          ? {
-              ...prev,
-              amount_thousands: prev.amount_thousands + d.amount_thousands,
-              estimate_type:
-                ESTIMATE_TYPE_RANK[prev.estimate_type] <= ESTIMATE_TYPE_RANK[d.estimate_type]
-                  ? prev.estimate_type
-                  : d.estimate_type,
-            }
-          : { ...d });
+        if (!prev) {
+          byFy.set(d.fiscal_year, { ...d });
+          continue;
+        }
+        const prevRank = ESTIMATE_TYPE_RANK[prev.estimate_type] ?? 99;
+        const curRank = ESTIMATE_TYPE_RANK[d.estimate_type] ?? 99;
+        // Different tiers -- not complementary, one supersedes the
+        // other (see this function's own docstring). Take the
+        // higher-ranked side outright rather than summing.
+        if (prevRank < curRank) continue;
+        if (curRank < prevRank) {
+          byFy.set(d.fiscal_year, { ...d });
+          continue;
+        }
+        // Same tier -- genuinely complementary, sum as before.
+        byFy.set(d.fiscal_year, { ...prev, amount_thousands: prev.amount_thousands + d.amount_thousands });
       }
       existing.series = [...byFy.values()].sort((a, b) => (a.fiscal_year > b.fiscal_year ? 1 : -1));
     }
